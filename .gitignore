@@ -1,0 +1,7 @@
+node_modules
+dist
+.DS_Store
+*.log
+
+# Source design file — large binary, not needed to build/deploy the site
+*.xd
