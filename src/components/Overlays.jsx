@@ -10,9 +10,9 @@ export function Legend({ hidden }) {
   return (
     <div className={`legend${hidden ? " hidden" : ""}`}>
       <div className="legend__t">Masdar City Square</div>
-      <div className="row">Grade-A offices &amp; retail spine</div>
+      <div className="row">Seven landmark buildings</div>
       <div className="row">
-        <i style={{ background: "#3a5a86" }} /> Two solar-canopy landmarks
+        <i style={{ background: "#4fa3a0" }} /> Office, retail, HQ &amp; amenity mix
       </div>
       <div className="row" style={{ color: "var(--muted)", marginTop: 2 }}>
         Click any building to explore

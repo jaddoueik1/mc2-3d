@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
-  PW, PH, wx, wz, BUILDINGS, MASTERPLAN,
+  PW, PH, wx, wz, GLB_BUILDINGS, MASTERPLAN,
 } from "../data/buildings";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -132,46 +133,7 @@ export function createScene(canvas, callbacks = {}) {
 
   const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 
-  // ------------------------------------------------------------- geometry
-  function wavyGeo(w, d, amp, waves, h) {
-    const s = new THREE.Shape();
-    const hw = w / 2, hd = d / 2, N = 22;
-    s.moveTo(-hw, -hd);
-    s.lineTo(hw, -hd);
-    for (let i = 1; i <= N; i++) {
-      const tt = i / N;
-      s.lineTo(hw + amp * Math.sin(tt * Math.PI * waves), -hd + d * tt);
-    }
-    s.lineTo(-hw, hd);
-    for (let i = 1; i <= N; i++) {
-      const tt = i / N;
-      s.lineTo(-hw - amp * Math.sin(tt * Math.PI * waves), hd - d * tt);
-    }
-    s.closePath();
-    const geo = new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false, steps: 1 });
-    geo.rotateX(-Math.PI / 2);
-    return geo;
-  }
-
-  function ovalGeo(ra, rb, hole, h) {
-    const s = new THREE.Shape();
-    s.absellipse(0, 0, ra, rb, 0, Math.PI * 2, false, 0);
-    const hp = new THREE.Path();
-    hp.absellipse(0, 0, ra * hole, rb * hole, 0, Math.PI * 2, true, 0);
-    s.holes.push(hp);
-    const geo = new THREE.ExtrudeGeometry(s, { depth: h, bevelEnabled: false, steps: 1 });
-    geo.rotateX(-Math.PI / 2);
-    return geo;
-  }
-
-  const solarMat = () => new THREE.MeshStandardMaterial({
-    color: 0x30456a, roughness: 0.32, metalness: 0.72,
-    emissive: 0x0a1830, emissiveIntensity: 0.28,
-  });
-  const mepMat = new THREE.MeshStandardMaterial({ color: 0x3b4250, roughness: 0.7, metalness: 0.3 });
-  const roofMat = new THREE.MeshStandardMaterial({ color: 0x646a73, roughness: 0.86, metalness: 0.12 });
-
-  // Procedural window / lit-floor textures, shared across every facade.
+  // Procedural lit-floor textures, shared by the distant skyline towers.
   function makeTex(draw) {
     const cv = document.createElement("canvas");
     cv.width = cv.height = 256;
@@ -182,101 +144,85 @@ export function createScene(canvas, callbacks = {}) {
     return t;
   }
 
-  const GC = 6, CEL = 256 / GC;
-  const winMap = makeTex((x, S) => {
-    x.fillStyle = "#cbc8c1";
-    x.fillRect(0, 0, S, S);
-    for (let r = 0; r < GC; r++) {
-      for (let c = 0; c < GC; c++) {
-        x.fillStyle = "#949dab";
-        x.fillRect(c * CEL + CEL * 0.15, r * CEL + CEL * 0.2, CEL * 0.7, CEL * 0.58);
-      }
-    }
-    x.fillStyle = "rgba(60,58,54,0.5)";
-    for (let r = 0; r <= GC; r++) x.fillRect(0, r * CEL - 1, S, 2);
-  });
-  const winEmis = makeTex((x, S) => {
-    x.fillStyle = "#000";
-    x.fillRect(0, 0, S, S);
-    for (let r = 0; r < GC; r++) {
-      for (let c = 0; c < GC; c++) {
-        if (Math.random() < 0.36) {
-          x.fillStyle = Math.random() < 0.72 ? "#ffca82" : "#bcd6f0";
-          x.fillRect(c * CEL + CEL * 0.15, r * CEL + CEL * 0.2, CEL * 0.7, CEL * 0.58);
-        }
-      }
-    }
-  });
-  winMap.repeat.set(1 / (GC * 4.0), 1 / (GC * 4.7));
-  winEmis.repeat.set(1 / (GC * 4.0), 1 / (GC * 4.7));
-
   // ------------------------------------------------------------ buildings
   const buildings = [];
   const pick = [];
 
-  BUILDINGS.forEach((b, idx) => {
-    const h = b.floors * 4.4 + 3;
-    const px = wx(b.u), pz = wz(b.v);
-    const bw = b.w * PW, bd = b.d * PH;
-    const g = new THREE.Group();
-    g.position.set(px, 0, pz);
-
-    const base = new THREE.Color(b.color !== undefined ? b.color : 0xbdb4a4);
-    const facMat = new THREE.MeshStandardMaterial({
-      color: base.clone(), map: winMap, emissiveMap: winEmis,
-      emissive: 0xffc284, emissiveIntensity: 0.5, roughness: 0.72, metalness: 0.06,
-    });
-    const tint = [{ mat: facMat, base: base.clone() }];
-
-    let fac;
-    if (b.shape === "oval") {
-      const ra = bw / 2, rb = bd / 2;
-      fac = new THREE.Mesh(ovalGeo(ra, rb, 0.5, h), [roofMat, facMat]);
-      const shM = solarMat();
-      tint.push({ mat: shM, base: new THREE.Color(0x30456a) });
-      const shell = new THREE.Mesh(ovalGeo(ra * 1.05, rb * 1.05, 0.52, 3.2), shM);
-      shell.position.y = h;
-      shell.castShadow = true;
-      g.add(shell);
-    } else if (b.shape === "folded") {
-      fac = new THREE.Mesh(wavyGeo(bw, bd, bw * 0.03, 2, h), [roofMat, facMat]);
-      const rM = solarMat();
-      tint.push({ mat: rM, base: new THREE.Color(0x30456a) });
-      for (let fi = 0; fi < 3; fi++) {
-        const slab = new THREE.Mesh(boxGeo, rM);
-        slab.scale.set(bw * 0.33, 1.4, bd * 0.92);
-        slab.position.set(-bw * 0.33 + fi * bw * 0.33, h + (fi === 1 ? 5 : 2.5), 0);
-        slab.rotation.z = (fi - 1) * 0.3;
-        slab.castShadow = true;
-        g.add(slab);
-      }
-    } else {
-      fac = new THREE.Mesh(wavyGeo(bw, bd, bw * 0.055, 3, h), [roofMat, facMat]);
-      for (let mi = 0; mi < 3; mi++) {
-        const mep = new THREE.Mesh(boxGeo, mepMat);
-        mep.scale.set(bw * 0.17, 3.4, bd * 0.17);
-        mep.position.set((mi - 1) * bw * 0.26, h + 1.7, ((mi % 2) * 2 - 1) * bd * 0.16);
-        mep.castShadow = true;
-        g.add(mep);
-      }
+  // Imported GLB models, wired into the pick/select/dim/grow-in system.
+  // `ready` (which hides the loader) fires once every GLB has settled —
+  // loaded or failed — instead of gating on procedural grow-in.
+  let glbSettled = 0;
+  function noteGlbSettled() {
+    glbSettled += 1;
+    if (glbSettled >= GLB_BUILDINGS.length && !ready) {
+      ready = true;
+      onReady();
     }
-    fac.castShadow = true;
-    fac.receiveShadow = true;
-    g.add(fac);
-    scene.add(g);
-    g.scale.y = reduce ? 1 : 0.001;
+  }
 
-    const bo = {
-      g, facMat, tint, data: b, h,
-      center: new THREE.Vector3(px, h * 0.5 + 3, pz),
-      focusR: Math.max(bw, bd, h) * 2.0 + 58,
-      dim: 1, hov: 0, delay: 0.12 + idx * 0.06,
-    };
-    g.children.forEach((ch) => {
-      ch.userData.bo = bo;
-      pick.push(ch);
+  const gltfLoader = new GLTFLoader();
+  GLB_BUILDINGS.forEach((data) => {
+    gltfLoader.load(data.asset, (gltf) => {
+      const model = gltf.scene;
+      const tint = [];
+      model.traverse((o) => {
+        if (o.isMesh) {
+          o.castShadow = true;
+          o.receiveShadow = true;
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          mats.forEach((m) => {
+            if (m && m.color) tint.push({ mat: m, base: m.color.clone() });
+          });
+        }
+      });
+
+      // Source files were authored Z-up, so their shallow Z axis (true
+      // building height) lands on Three's Y axis as a tall, narrow footprint
+      // instead — reads as a vertical tower. Rotate Z-up into Y-up to lay it flat.
+      model.rotation.x = -Math.PI / 2;
+
+      // Normalize scale so the model reads at roughly the same footprint as
+      // the other blocks, regardless of the units it was exported in.
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const scale = data.targetWidth / Math.max(size.x, size.z, 1e-6);
+      model.scale.setScalar(scale);
+
+      const scaledBox = new THREE.Box3().setFromObject(model);
+      const scaledSize = new THREE.Vector3();
+      scaledBox.getSize(scaledSize);
+      const center = new THREE.Vector3();
+      scaledBox.getCenter(center);
+
+      // Wrap in a group anchored at ground level so growth can animate
+      // g.scale.y up from the base.
+      const px = wx(data.u), pz = wz(data.v);
+      const g = new THREE.Group();
+      g.position.set(px, 0, pz);
+      model.position.set(-center.x, -scaledBox.min.y, -center.z);
+      g.add(model);
+      g.scale.y = reduce ? 1 : 0.001;
+      scene.add(g);
+
+      const bo = {
+        g, facMat: null, tint, data, h: scaledSize.y,
+        center: new THREE.Vector3(px, scaledSize.y * 0.5 + 3, pz),
+        focusR: Math.max(scaledSize.x, scaledSize.z, scaledSize.y) * 2.0 + 58,
+        dim: 1, hov: 0, grown: false, loadT: clock.getElapsedTime(),
+      };
+      model.traverse((o) => {
+        if (o.isMesh) {
+          o.userData.bo = bo;
+          pick.push(o);
+        }
+      });
+      buildings.push(bo);
+      noteGlbSettled();
+    }, undefined, (err) => {
+      console.error(`Failed to load ${data.asset}`, err);
+      noteGlbSettled();
     });
-    buildings.push(bo);
   });
 
   // ------------------------------------------------------------- context
@@ -407,19 +353,14 @@ export function createScene(canvas, callbacks = {}) {
     if (!inView) return;
     const t = clock.getElapsedTime();
 
-    // Buildings grow in on load.
-    if (!ready) {
-      let all = true;
-      for (const bo of buildings) {
-        let f = reduce ? 1 : clamp((t - bo.delay) / 0.9, 0, 1);
-        f = 1 - Math.pow(1 - f, 3);
-        bo.g.scale.y = Math.max(0.001, f);
-        if (f < 1) all = false;
-      }
-      if (all) {
-        ready = true;
-        onReady();
-      }
+    // Buildings grow in as each GLB finishes loading (staggered, since
+    // loads settle at different times).
+    for (const bo of buildings) {
+      if (bo.grown) continue;
+      const gt = reduce ? 1 : clamp((t - bo.loadT) / 0.9, 0, 1);
+      const f = 1 - Math.pow(1 - gt, 3);
+      bo.g.scale.y = Math.max(0.001, f);
+      if (gt >= 1) bo.grown = true;
     }
 
     target.lerp(targetDes, 0.075);
@@ -450,7 +391,7 @@ export function createScene(canvas, callbacks = {}) {
         scratch.copy(tm.base).multiplyScalar(0.42 + 0.58 * b.dim);
         tm.mat.color.copy(scratch);
       }
-      b.facMat.emissiveIntensity = 0.5 + b.hov * 0.5;
+      if (b.facMat) b.facMat.emissiveIntensity = 0.5 + b.hov * 0.5;
     }
 
     renderer.render(scene, camera);

@@ -8,7 +8,6 @@ export const wz = (v) => (v - 0.5) * PH;
 export const USE_COLORS = {
   office: "#6f8bb0",
   retail: "#e0a24e",
-  hotel: "#c07a54",
   hq: "#5f9c6f",
   amenity: "#4fa3a0",
   community: "#cbb48a",
@@ -27,63 +26,60 @@ export const FLOORPLATES = [
   "/assets/floorplate-2.jpg",
 ];
 
-// Buildings matched to the render composition.
-// u,v = centre; w,d = size — all normalized 0..1 across the site plate.
-export const BUILDINGS = [
+// Imported GLB models, placed across the site plate — u,v = centre,
+// normalized 0..1. One landmark anchors the centre; four sit at the
+// corners and two at the east/west mid-edges, each spaced so its
+// targetWidth footprint clears its neighbours' with visible margin.
+// Same clickable/selectable data shape consumed directly by createScene's
+// GLTFLoader pass.
+export const GLB_BUILDINGS = [
   {
-    id: "T", name: "The Terraces — Office", useKey: "office", use: "Grade-A Offices",
-    shape: "wavy", color: 0xb06a4a, u: 0.22, v: 0.44, w: 0.21, d: 0.30,
-    floors: 6, gfa: "24,800", avail: "4 floors", img: "street", fp: 0,
-    blurb: "The terracotta perimeter block — deep vertical fins wrapping a C-shaped courtyard, warm-lit at dusk.",
-    tags: ["LEED Platinum", "Terracotta fins", "Column-free", "Courtyard"],
+    id: "SA", name: "The Wave — Innovation Center", useKey: "hq", use: "HQ / Anchor",
+    asset: "/assets/space_agency_wave_building.glb", u: 0.50, v: 0.50, targetWidth: 100,
+    floors: 3, gfa: "14,600", avail: "Anchor available", img: "aerial", fp: 1,
+    blurb: "A folded, ribbon-like anchor building at the heart of the square — the landmark research and innovation centre the plaza is organised around.",
+    tags: ["Landmark form", "Anchor available", "Innovation hub"],
   },
   {
-    id: "A", name: "Office Block A", useKey: "office", use: "Grade-A Offices",
-    shape: "wavy", color: 0xbdb4a4, u: 0.38, v: 0.60, w: 0.15, d: 0.15,
-    floors: 5, gfa: "15,200", avail: "2 floors", img: "street", fp: 1,
-    blurb: "Wavy-edged block with a grey plant roof, opening to the landscaped street.",
-    tags: ["LEED Platinum", "Roof plant", "Flexible floors"],
+    id: "CY", name: "The Courtyard Pavilion", useKey: "amenity", use: "Community & Amenity",
+    asset: "/assets/courtyard_building_webgl.glb", u: 0.13, v: 0.13, targetWidth: 65,
+    floors: 4, gfa: "9,200", avail: "Leasing now", img: "street", fp: 0,
+    blurb: "A low courtyard block framing a shaded internal garden — informal amenity space at the northwest corner of the plaza.",
+    tags: ["Courtyard garden", "Shaded arcade", "Community use"],
   },
   {
-    id: "B", name: "Office Block B", useKey: "office", use: "Grade-A Offices",
-    shape: "wavy", color: 0xbdb4a4, u: 0.38, v: 0.81, w: 0.15, d: 0.16,
-    floors: 5, gfa: "15,600", avail: "Full building", img: "street", fp: 0,
-    blurb: "Front-row block addressing the boulevard, with active retail frontage at grade.",
-    tags: ["LEED Platinum", "Retail frontage", "WELL Gold"],
+    id: "CD", name: "Crystal Dunes", useKey: "retail", use: "Retail & F&B",
+    asset: "/assets/crystal_dunes.glb", u: 0.87, v: 0.13, targetWidth: 60,
+    floors: 2, gfa: "6,400", avail: "Leasing now", img: "aerial", fp: 2,
+    blurb: "A low, dune-shaped retail pavilion with a faceted crystalline roof — an informal market hall at the northeast corner.",
+    tags: ["Faceted roof", "Daylighting", "Market hall"],
   },
   {
-    id: "C", name: "Office Block C", useKey: "office", use: "Grade-A Offices",
-    shape: "wavy", color: 0xbdb4a4, u: 0.56, v: 0.60, w: 0.16, d: 0.15,
-    floors: 6, gfa: "18,900", avail: "1 floor", img: "street", fp: 1,
-    blurb: "Central block on the retail spine, with a double-height lobby.",
-    tags: ["LEED Platinum", "Sky lobby", "Column-free"],
+    id: "OT", name: "Oasis Terraces", useKey: "amenity", use: "Community & Amenity",
+    asset: "/assets/oasis_terraces.glb", u: 0.87, v: 0.90, targetWidth: 75,
+    floors: 4, gfa: "10,100", avail: "Leasing now", img: "street", fp: 1,
+    blurb: "Stepped terraces cascading toward a shaded oasis garden at the southeast corner — a wellness and community retreat.",
+    tags: ["Stepped terraces", "Oasis garden", "Wellness"],
   },
   {
-    id: "H", name: "Retail Galleria", useKey: "retail", use: "Retail & F&B",
-    shape: "wavy", color: 0xc79a5e, u: 0.56, v: 0.81, w: 0.16, d: 0.16,
-    floors: 3, gfa: "11,400", avail: "Leasing now", img: "street", fp: 2,
-    blurb: "The shaded, naturally-ventilated retail spine of cafés and restaurants.",
-    tags: ["F&B", "Naturally shaded", "Terraces"],
+    id: "DR", name: "Desert Ribbon", useKey: "office", use: "Grade-A Offices",
+    asset: "/assets/desert_ribbon.glb", u: 0.13, v: 0.90, targetWidth: 80,
+    floors: 5, gfa: "12,800", avail: "3 floors", img: "street", fp: 0,
+    blurb: "An elongated ribbon-form office block along the southwest edge, wrapped in a continuous brise-soleil.",
+    tags: ["Ribbon form", "Brise-soleil shading", "Column-free"],
   },
   {
-    id: "D", name: "Office Block D", useKey: "office", use: "Grade-A Offices",
-    shape: "wavy", color: 0xbdb4a4, u: 0.69, v: 0.71, w: 0.12, d: 0.17,
-    floors: 6, gfa: "16,100", avail: "2 floors", img: "street", fp: 1,
-    blurb: "East block linking through to the solar-canopy landmarks.",
-    tags: ["LEED Platinum", "Bridge link", "PV shading"],
+    id: "SC", name: "Solar Canyon", useKey: "office", use: "Grade-A Offices",
+    asset: "/assets/solar_canyon.glb", u: 0.08, v: 0.50, targetWidth: 55,
+    floors: 4, gfa: "8,600", avail: "2 floors", img: "street", fp: 1,
+    blurb: "A narrow, canyon-like office block wrapped in deep solar louvres — a shaded corridor building on the square's west flank.",
+    tags: ["Solar louvres", "Shaded canyon", "Column-free"],
   },
   {
-    id: "HQ", name: "The Solar Canopy — HQ", useKey: "hq", use: "HQ / Anchor",
-    shape: "folded", color: 0x9a968f, u: 0.75, v: 0.26, w: 0.23, d: 0.20,
-    floors: 7, gfa: "28,400", avail: "Anchor available", img: "aerial", fp: 1,
-    blurb: "The folded photovoltaic canopy — a faceted solar roof crowning the anchor headquarters.",
-    tags: ["Net Zero Energy", "Folded PV roof", "Naming rights", "Build-to-suit"],
-  },
-  {
-    id: "HT", name: "The Solar Oculus — Hotel", useKey: "hotel", use: "Hotel & Conference",
-    shape: "oval", color: 0x9a968f, u: 0.83, v: 0.53, w: 0.17, d: 0.23,
-    floors: 6, gfa: "22,600", avail: "Operator LOI", img: "aerial", fp: 1,
-    blurb: "The oval solar shell with an open oculus over a garden atrium — the icon of the square.",
-    tags: ["Signature form", "Solar shell", "Oculus atrium", "Rooftop bar"],
+    id: "SB", name: "Sky Bridge Forum", useKey: "community", use: "Civic & Community",
+    asset: "/assets/sky_bridge_forum.glb", u: 0.92, v: 0.50, targetWidth: 55,
+    floors: 3, gfa: "7,800", avail: "Leasing now", img: "aerial", fp: 2,
+    blurb: "A civic forum building linked by an elevated sky bridge — a gathering hall and events space on the square's east flank.",
+    tags: ["Sky bridge link", "Civic forum", "Events hall"],
   },
 ];
