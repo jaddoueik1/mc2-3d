@@ -267,7 +267,7 @@ language plpgsql
 as $$
 begin
   if new.published_revision_id is not null
-    and new.published_revision_id is distinct from old.published_revision_id then
+    and (tg_op = 'INSERT' or new.published_revision_id is distinct from old.published_revision_id) then
     perform public.assert_revision_media_is_active(new.id, new.published_revision_id);
   end if;
   return new;
@@ -275,7 +275,7 @@ end;
 $$;
 
 create trigger content_entities_published_media_guard
-before update of published_revision_id on public.content_entities
+before insert or update of published_revision_id on public.content_entities
 for each row execute function public.validate_published_revision_pointer_media();
 
 create function public.validate_publication_media()
@@ -334,7 +334,7 @@ returns trigger
 language plpgsql
 as $$
 begin
-  if new.published_revision_id is distinct from old.published_revision_id then
+  if tg_op = 'INSERT' or new.published_revision_id is distinct from old.published_revision_id then
     if new.published_revision_id is null then
       if exists (
         select 1 from public.publications
@@ -361,7 +361,7 @@ end;
 $$;
 
 create trigger content_entities_published_pointer_consistency
-before update of published_revision_id on public.content_entities
+before insert or update of published_revision_id on public.content_entities
 for each row execute function public.validate_published_revision_pointer_consistency();
 
 create function public.sync_entity_published_revision_from_publication()
@@ -391,6 +391,24 @@ begin
   return new;
 end;
 $$;
+
+
+create function public.reject_publication_entity_mutation()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.entity_id is distinct from old.entity_id then
+    raise exception 'publication entity is immutable'
+      using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$$;
+
+create trigger publications_entity_immutable
+before update of entity_id on public.publications
+for each row execute function public.reject_publication_entity_mutation();
 
 create trigger publications_sync_entity_published_revision
 after insert or update or delete on public.publications
