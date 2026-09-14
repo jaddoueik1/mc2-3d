@@ -181,9 +181,9 @@ select throws_like(
   $$update public.content_entities
     set published_revision_id = '00000000-0000-0000-0000-000000000022'
     where id = '00000000-0000-0000-0000-000000000010'$$,
-  '23503',
-  'violates foreign key constraint.*',
-  'published revision pointer must reference a revision of the same entity'
+  'P0001',
+  'published revision pointer must match the active publication',
+  'cross-entity published pointer is rejected by the consistency guard'
 );
 
 select throws_like(
