@@ -50,7 +50,6 @@ create table public.content_revisions (
   change_summary text,
   created_at timestamptz not null default now(),
   created_by uuid,
-  primary key (id),
   unique (entity_id, id),
   unique (entity_id, revision_number)
 );
@@ -163,7 +162,10 @@ create table public.audit_events (
   entity_id uuid references public.content_entities(id) on delete set null,
   revision_id uuid,
   metadata jsonb not null default '{}'::jsonb,
-  occurred_at timestamptz not null default now()
+  occurred_at timestamptz not null default now(),
+  check (revision_id is null or entity_id is not null),
+  foreign key (entity_id, revision_id)
+    references public.content_revisions(entity_id, id) on delete restrict
 );
 
 create index audit_events_entity_occurred_at_idx
@@ -204,6 +206,7 @@ as $$
 begin
   if new.id is distinct from old.id
     or new.entity_type is distinct from old.entity_type
+    or new.slug is distinct from old.slug
     or new.metric_key is distinct from old.metric_key
     or new.geographic_scope_id is distinct from old.geographic_scope_id
     or new.period_start is distinct from old.period_start
@@ -219,32 +222,108 @@ create trigger content_entities_identity_immutable
 before update on public.content_entities
 for each row execute function public.reject_content_identity_mutation();
 
-create function public.prevent_active_published_media_removal()
-returns trigger
+create function public.assert_revision_media_is_active(candidate_entity_id uuid, candidate_revision_id uuid)
+returns void
 language plpgsql
-as $$
-declare
-  asset_id uuid;
+as $
 begin
-  asset_id := old.id;
-
   if exists (
     select 1
     from public.revision_dependencies dependency
-    join public.publications publication
+    join public.media_assets asset on asset.id = dependency.target_media_asset_id
+    where dependency.source_entity_id = candidate_entity_id
+      and dependency.source_revision_id = candidate_revision_id
+      and asset.archived_at is not null
+  ) then
+    raise exception 'published revisions cannot reference archived media assets'
+      using errcode = 'P0001';
+  end if;
+end;
+$;
+
+create function public.reject_archived_media_dependency()
+returns trigger
+language plpgsql
+as $
+begin
+  if new.target_media_asset_id is not null and exists (
+    select 1 from public.media_assets
+    where id = new.target_media_asset_id and archived_at is not null
+  ) then
+    raise exception 'revision dependencies cannot reference archived media assets'
+      using errcode = 'P0001';
+  end if;
+  return new;
+end;
+$;
+
+create trigger revision_dependencies_archived_media_guard
+before insert on public.revision_dependencies
+for each row execute function public.reject_archived_media_dependency();
+
+create function public.validate_published_revision_pointer_media()
+returns trigger
+language plpgsql
+as $
+begin
+  if new.published_revision_id is not null
+    and new.published_revision_id is distinct from old.published_revision_id then
+    perform public.assert_revision_media_is_active(new.id, new.published_revision_id);
+  end if;
+  return new;
+end;
+$;
+
+create trigger content_entities_published_media_guard
+before update of published_revision_id on public.content_entities
+for each row execute function public.validate_published_revision_pointer_media();
+
+create function public.validate_publication_media()
+returns trigger
+language plpgsql
+as $
+begin
+  if new.status = 'published' and new.unpublished_at is null then
+    perform public.assert_revision_media_is_active(new.entity_id, new.revision_id);
+  end if;
+  return new;
+end;
+$;
+
+create trigger publications_published_media_guard
+before insert or update of status, revision_id, unpublished_at on public.publications
+for each row execute function public.validate_publication_media();
+
+create or replace function public.prevent_active_published_media_removal()
+returns trigger
+language plpgsql
+as $
+declare
+  asset_id uuid := old.id;
+  becomes_archived boolean := tg_op = 'UPDATE'
+    and old.archived_at is null
+    and new.archived_at is not null;
+begin
+  if (tg_op = 'DELETE' or becomes_archived) and exists (
+    select 1
+    from public.revision_dependencies dependency
+    left join public.publications publication
       on publication.entity_id = dependency.source_entity_id
      and publication.revision_id = dependency.source_revision_id
+     and publication.status = 'published'
+     and publication.unpublished_at is null
+    left join public.content_entities entity
+      on entity.id = dependency.source_entity_id
+     and entity.published_revision_id = dependency.source_revision_id
     where dependency.target_media_asset_id = asset_id
-      and publication.status = 'published'
-      and publication.unpublished_at is null
+      and (publication.id is not null or entity.id is not null)
   ) then
     raise exception 'media asset is referenced by an active published revision'
       using errcode = 'P0001';
   end if;
-
   return case when tg_op = 'DELETE' then old else new end;
 end;
-$$;
+$;
 
 create trigger media_assets_active_publication_guard
 before update of archived_at or delete on public.media_assets
