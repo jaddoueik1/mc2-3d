@@ -385,7 +385,10 @@ begin
    where id = affected_entity_id
      and published_revision_id is distinct from active_revision_id;
 
-  return coalesce(new, old);
+  if tg_op = 'DELETE' then
+    return old;
+  end if;
+  return new;
 end;
 $$;
 
