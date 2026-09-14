@@ -8,7 +8,7 @@ import type {
   Vec3,
   Widget,
   WidgetType,
-} from './contracts';
+} from './contracts.ts';
 
 export type ValidationResult<T> =
   | { success: true; data: T }
