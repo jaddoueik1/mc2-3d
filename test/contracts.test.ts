@@ -1,11 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import {
   validateBuilding,
   validateFloor,
   validateObservation,
   validatePlacement,
   validateWidget,
-} from '../shared/validation';
+} from '../shared/validation.ts';
 
 const placement = {
   buildingId: 'hq',
@@ -47,7 +48,7 @@ const floor = {
 
 const observation = {
   metricKey: 'occupancy',
-  scope: 'mc2' as const,
+  scope: 'mc2',
   periodStart: '2026-01-01',
   periodEnd: '2026-01-31',
   value: 95,
@@ -58,7 +59,7 @@ const observation = {
 
 const widget = {
   id: 'occupancy-kpi',
-  type: 'kpi' as const,
+  type: 'kpi',
   title: 'Occupancy',
   metricKeys: ['occupancy'],
   order: 1,
@@ -66,64 +67,84 @@ const widget = {
 };
 
 describe('CMS data contracts', () => {
-  it('accepts a valid placement', () => {
-    expect(validatePlacement(placement).success).toBe(true);
+  it('accepts placements at inclusive masterplan boundaries', () => {
+    assert.equal(validatePlacement(placement).success, true);
+    assert.equal(validatePlacement({ ...placement, u: 0, v: 1 }).success, true);
+    assert.equal(validatePlacement({ ...placement, u: 1, v: 0 }).success, true);
   });
 
   it('rejects placement coordinates outside the inclusive masterplan range', () => {
-    expect(validatePlacement({ ...placement, u: 1.1 }).success).toBe(false);
+    assert.equal(validatePlacement({ ...placement, u: 1.1 }).success, false);
+    assert.equal(validatePlacement({ ...placement, v: -0.01 }).success, false);
   });
 
   it('rejects a placement with a zero width or non-finite number', () => {
-    expect(validatePlacement({ ...placement, targetWidth: 0 }).success).toBe(false);
-    expect(validatePlacement({ ...placement, verticalOffset: Number.NaN }).success).toBe(false);
-    expect(validatePlacement({ ...placement, targetWidth: Infinity }).success).toBe(false);
+    assert.equal(validatePlacement({ ...placement, targetWidth: 0 }).success, false);
+    assert.equal(validatePlacement({ ...placement, verticalOffset: Number.NaN }).success, false);
+    assert.equal(validatePlacement({ ...placement, targetWidth: Infinity }).success, false);
   });
 
   it('rejects unsafe model URLs and unknown placement fields', () => {
-    expect(validatePlacement({ ...placement, modelUrl: 'javascript:alert(1)' }).success).toBe(false);
-    expect(validatePlacement({ ...placement, extra: true }).success).toBe(false);
+    assert.equal(validatePlacement({ ...placement, modelUrl: 'javascript:alert(1)' }).success, false);
+    assert.equal(validatePlacement({ ...placement, modelUrl: '/assets/../admin.glb' }).success, false);
+    assert.equal(
+      validatePlacement({ ...placement, modelUrl: 'https://user:pass@example.com/model.glb' }).success,
+      false,
+    );
+    assert.equal(validatePlacement({ ...placement, extra: true }).success, false);
   });
 
-  it('allows nullable building measurements', () => {
-    expect(
+  it('allows nullable building measurements and rejects unknown building fields', () => {
+    assert.equal(
       validateBuilding({ ...building, heightM: null, gfaM2: null, enquiryUrl: null }).success,
-    ).toBe(true);
+      true,
+    );
+    assert.equal(validateBuilding({ ...building, extra: true }).success, false);
   });
 
   it('rejects invalid building floor counts and unsafe enquiry URLs', () => {
-    expect(validateBuilding({ ...building, floorCount: -1 }).success).toBe(false);
-    expect(validateBuilding({ ...building, floorCount: 1.5 }).success).toBe(false);
-    expect(validateBuilding({ ...building, enquiryUrl: 'data:text/html,unsafe' }).success).toBe(false);
+    assert.equal(validateBuilding({ ...building, floorCount: -1 }).success, false);
+    assert.equal(validateBuilding({ ...building, floorCount: 1.5 }).success, false);
+    assert.equal(
+      validateBuilding({ ...building, enquiryUrl: 'data:text/html,unsafe' }).success,
+      false,
+    );
   });
 
-  it('validates floor drawings and required floor labels', () => {
-    expect(validateFloor(floor).success).toBe(true);
-    expect(validateFloor({ ...floor, label: '' }).success).toBe(false);
-    expect(
+  it('validates nullable floor fields, required labels, and drawing URLs', () => {
+    assert.equal(validateFloor({ ...floor, areaM2: null, drawing: null }).success, true);
+    assert.equal(validateFloor({ ...floor, label: '' }).success, false);
+    assert.equal(
       validateFloor({ ...floor, drawing: { url: 'file:///tmp/floor.svg', alt: 'Unsafe' } }).success,
-    ).toBe(false);
+      false,
+    );
+    assert.equal(validateFloor({ ...floor, extra: true }).success, false);
   });
 
-  it('requires valid ordered ISO dates for observations', () => {
-    expect(validateObservation(observation).success).toBe(true);
-    expect(
+  it('accepts valid ISO dates and rejects invalid or out-of-order periods', () => {
+    assert.equal(validateObservation(observation).success, true);
+    assert.equal(
       validateObservation({ ...observation, periodStart: '2026-02-01', periodEnd: '2026-01-31' })
         .success,
-    ).toBe(false);
-    expect(validateObservation({ ...observation, periodStart: '2026-02-30' }).success).toBe(false);
+      false,
+    );
+    assert.equal(validateObservation({ ...observation, periodStart: '2026-02-30' }).success, false);
   });
 
-  it('rejects non-finite observation values', () => {
-    expect(validateObservation({ ...observation, value: Number.NaN }).success).toBe(false);
-    expect(validateObservation({ ...observation, target: Infinity }).success).toBe(false);
+  it('allows nullable observations and rejects non-finite values and unknown fields', () => {
+    assert.equal(validateObservation({ ...observation, value: null, target: null }).success, true);
+    assert.equal(validateObservation({ ...observation, value: Number.NaN }).success, false);
+    assert.equal(validateObservation({ ...observation, target: Infinity }).success, false);
+    assert.equal(validateObservation({ ...observation, extra: true }).success, false);
   });
 
-  it('accepts only allowlisted widget types and safe image URLs', () => {
-    expect(validateWidget(widget).success).toBe(true);
-    expect(validateWidget({ ...widget, type: 'map' }).success).toBe(false);
-    expect(
+  it('accepts only allowlisted widget types, safe image URLs, and known fields', () => {
+    assert.equal(validateWidget(widget).success, true);
+    assert.equal(validateWidget({ ...widget, type: 'map' }).success, false);
+    assert.equal(
       validateWidget({ ...widget, image: { url: 'data:image/svg+xml,unsafe', alt: 'Unsafe' } }).success,
-    ).toBe(false);
+      false,
+    );
+    assert.equal(validateWidget({ ...widget, extra: true }).success, false);
   });
 });
