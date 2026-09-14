@@ -1,6 +1,6 @@
 begin;
 
-select plan(22);
+select plan(24);
 
 insert into public.geographic_scopes (id, code, name, scope_type)
 values ('00000000-0000-0000-0000-000000000001', 'BEY', 'Beirut', 'city');
@@ -314,6 +314,32 @@ select throws_like(
   'P0001',
   'media asset is referenced by an active published revision',
   'media referenced by an active published pointer cannot be deleted'
+);
+
+
+select throws_like(
+  $$insert into public.content_entities (id, entity_type, slug, title, published_revision_id)
+    values (
+      '00000000-0000-0000-0000-000000000015',
+      'metric',
+      'initial-published-pointer',
+      'Initial published pointer',
+      '00000000-0000-0000-0000-000000000020'
+    )$$,
+  'P0001',
+  'published revision pointer must match the active publication',
+  'initial entity insert cannot bypass published pointer consistency'
+);
+
+select throws_like(
+  $$update public.publications
+    set entity_id = '00000000-0000-0000-0000-000000000014'
+    where entity_id = '00000000-0000-0000-0000-000000000010'
+      and revision_id = '00000000-0000-0000-0000-000000000020'
+      and status = 'published'$$,
+  'P0001',
+  'publication entity is immutable',
+  'active publication cannot move to another entity'
 );
 
 select * from finish();
