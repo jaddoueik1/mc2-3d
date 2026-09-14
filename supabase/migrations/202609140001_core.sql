@@ -225,7 +225,7 @@ for each row execute function public.reject_content_identity_mutation();
 create function public.assert_revision_media_is_active(candidate_entity_id uuid, candidate_revision_id uuid)
 returns void
 language plpgsql
-as $
+as $$
 begin
   if exists (
     select 1
@@ -239,12 +239,12 @@ begin
       using errcode = 'P0001';
   end if;
 end;
-$;
+$$;
 
 create function public.reject_archived_media_dependency()
 returns trigger
 language plpgsql
-as $
+as $$
 begin
   if new.target_media_asset_id is not null and exists (
     select 1 from public.media_assets
@@ -255,7 +255,7 @@ begin
   end if;
   return new;
 end;
-$;
+$$;
 
 create trigger revision_dependencies_archived_media_guard
 before insert on public.revision_dependencies
@@ -264,7 +264,7 @@ for each row execute function public.reject_archived_media_dependency();
 create function public.validate_published_revision_pointer_media()
 returns trigger
 language plpgsql
-as $
+as $$
 begin
   if new.published_revision_id is not null
     and new.published_revision_id is distinct from old.published_revision_id then
@@ -272,7 +272,7 @@ begin
   end if;
   return new;
 end;
-$;
+$$;
 
 create trigger content_entities_published_media_guard
 before update of published_revision_id on public.content_entities
@@ -281,14 +281,14 @@ for each row execute function public.validate_published_revision_pointer_media()
 create function public.validate_publication_media()
 returns trigger
 language plpgsql
-as $
+as $$
 begin
   if new.status = 'published' and new.unpublished_at is null then
     perform public.assert_revision_media_is_active(new.entity_id, new.revision_id);
   end if;
   return new;
 end;
-$;
+$$;
 
 create trigger publications_published_media_guard
 before insert or update of status, revision_id, unpublished_at on public.publications
@@ -297,7 +297,7 @@ for each row execute function public.validate_publication_media();
 create or replace function public.prevent_active_published_media_removal()
 returns trigger
 language plpgsql
-as $
+as $$
 declare
   asset_id uuid := old.id;
   becomes_archived boolean := tg_op = 'UPDATE'
@@ -323,11 +323,75 @@ begin
   end if;
   return case when tg_op = 'DELETE' then old else new end;
 end;
-$;
+$$;
 
 create trigger media_assets_active_publication_guard
 before update of archived_at or delete on public.media_assets
 for each row execute function public.prevent_active_published_media_removal();
+
+create function public.validate_published_revision_pointer_consistency()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.published_revision_id is distinct from old.published_revision_id then
+    if new.published_revision_id is null then
+      if exists (
+        select 1 from public.publications
+        where entity_id = new.id
+          and status = 'published'
+          and unpublished_at is null
+      ) then
+        raise exception 'published revision pointer must match the active publication'
+          using errcode = 'P0001';
+      end if;
+    elsif not exists (
+      select 1 from public.publications
+      where entity_id = new.id
+        and revision_id = new.published_revision_id
+        and status = 'published'
+        and unpublished_at is null
+    ) then
+      raise exception 'published revision pointer must match the active publication'
+        using errcode = 'P0001';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger content_entities_published_pointer_consistency
+before update of published_revision_id on public.content_entities
+for each row execute function public.validate_published_revision_pointer_consistency();
+
+create function public.sync_entity_published_revision_from_publication()
+returns trigger
+language plpgsql
+as $$
+declare
+  affected_entity_id uuid := coalesce(new.entity_id, old.entity_id);
+  active_revision_id uuid;
+begin
+  select revision_id
+    into active_revision_id
+    from public.publications
+   where entity_id = affected_entity_id
+     and status = 'published'
+     and unpublished_at is null;
+
+  update public.content_entities
+     set published_revision_id = active_revision_id,
+         updated_at = now()
+   where id = affected_entity_id
+     and published_revision_id is distinct from active_revision_id;
+
+  return coalesce(new, old);
+end;
+$$;
+
+create trigger publications_sync_entity_published_revision
+after insert or update or delete on public.publications
+for each row execute function public.sync_entity_published_revision_from_publication();
 
 revoke all on table
   public.geographic_scopes,
