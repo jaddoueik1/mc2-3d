@@ -1,6 +1,6 @@
 begin;
 
-select plan(17);
+select plan(19);
 
 insert into public.geographic_scopes (id, code, name, scope_type)
 values ('00000000-0000-0000-0000-000000000001', 'BEY', 'Beirut', 'city');
@@ -40,9 +40,18 @@ insert into public.content_revisions (id, entity_id, revision_number, content)
 values ('00000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000010', 1, '{"value": 100}');
 
 select lives_ok(
-  $$insert into public.content_revisions (id, entity_id, revision_number, content)
-    values ('00000000-0000-0000-0000-000000000021', '00000000-0000-0000-0000-000000000010', 2, '{"value": 110}')$$,
+  $insert into public.content_revisions (id, entity_id, revision_number, content)
+    values ('00000000-0000-0000-0000-000000000021', '00000000-0000-0000-0000-000000000010', 2, '{"value": 110}')$,
   'a second revision for the same stable entity is allowed'
+);
+
+select throws_like(
+  $update public.content_entities
+    set slug = 'population-beirut-renamed'
+    where id = '00000000-0000-0000-0000-000000000010'$,
+  'P0001',
+  'content entity identity fields are immutable',
+  'stable entity slug cannot be mutated'
 );
 
 select throws_like(
@@ -148,7 +157,19 @@ values ('00000000-0000-0000-0000-000000000022', '00000000-0000-0000-0000-0000000
 set constraints all immediate;
 
 select throws_like(
-  $$update public.content_entities
+  $insert into public.audit_events (event_type, entity_id, revision_id)
+    values (
+      'revision.check',
+      '00000000-0000-0000-0000-000000000010',
+      '00000000-0000-0000-0000-000000000022'
+    )$,
+  '23503',
+  'violates foreign key constraint.*',
+  'audit revision must belong to its entity'
+);
+
+select throws_like(
+  $update public.content_entities
     set latest_revision_id = '00000000-0000-0000-0000-000000000022'
     where id = '00000000-0000-0000-0000-000000000010'$$,
   '23503',
