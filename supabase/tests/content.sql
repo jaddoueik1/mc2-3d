@@ -18,7 +18,7 @@ insert into public.content_entities (
   date '2025-12-31'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.content_entities (
       id, entity_type, slug, title, metric_key, geographic_scope_id, period_start, period_end
     ) values (
@@ -32,7 +32,7 @@ select throws_like(
       date '2025-12-31'
     )$$,
   '23505',
-  'duplicate key value.*',
+  null,
   'duplicate observation stable identity is rejected'
 );
 
@@ -45,7 +45,7 @@ select lives_ok(
   'a second revision for the same stable entity is allowed'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.content_entities
     set slug = 'population-beirut-renamed'
     where id = '00000000-0000-0000-0000-000000000010'$$,
@@ -54,7 +54,7 @@ select throws_like(
   'stable entity slug cannot be mutated'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.content_entities (id, entity_type, slug, title, building_entity_id)
     values (
       '00000000-0000-0000-0000-000000000012',
@@ -64,11 +64,11 @@ select throws_like(
       'ffffffff-ffff-ffff-ffff-ffffffffffff'
     )$$,
   '23503',
-  'violates foreign key constraint.*',
+  null,
   'missing building reference is rejected'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.revision_dependencies (
       dependency_type, source_entity_id, source_revision_id, target_entity_id, target_revision_id
     ) values (
@@ -79,11 +79,11 @@ select throws_like(
       'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
     )$$,
   '23503',
-  'violates foreign key constraint.*',
+  null,
   'missing dependency target revision is rejected'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.content_revisions
     set content = '{"value": 999}'
     where id = '00000000-0000-0000-0000-000000000020'$$,
@@ -92,7 +92,7 @@ select throws_like(
   'historical revision updates are denied'
 );
 
-select throws_like(
+select throws_ok(
   $$delete from public.content_revisions
     where id = '00000000-0000-0000-0000-000000000020'$$,
   'P0001',
@@ -113,7 +113,7 @@ insert into public.revision_dependencies (
   '00000000-0000-0000-0000-000000000030'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.revision_dependencies
     set dependency_type = 'changed'
     where id = '00000000-0000-0000-0000-000000000040'$$,
@@ -122,7 +122,7 @@ select throws_like(
   'historical dependency updates are denied'
 );
 
-select throws_like(
+select throws_ok(
   $$delete from public.revision_dependencies
     where id = '00000000-0000-0000-0000-000000000040'$$,
   'P0001',
@@ -130,7 +130,7 @@ select throws_like(
   'historical dependency deletes are denied'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.content_entities (
       id, entity_type, slug, title, metric_key, geographic_scope_id, period_start, period_end
     ) values (
@@ -144,7 +144,7 @@ select throws_like(
       date '2025-01-01'
     )$$,
   '23514',
-  'violates check constraint.*',
+  null,
   'observation period end cannot precede period start'
 );
 
@@ -156,7 +156,7 @@ values ('00000000-0000-0000-0000-000000000022', '00000000-0000-0000-0000-0000000
 
 set constraints all immediate;
 
-select throws_like(
+select throws_ok(
   $$insert into public.audit_events (event_type, entity_id, revision_id)
     values (
       'revision.check',
@@ -164,20 +164,20 @@ select throws_like(
       '00000000-0000-0000-0000-000000000022'
     )$$,
   '23503',
-  'violates foreign key constraint.*',
+  null,
   'audit revision must belong to its entity'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.content_entities
     set latest_revision_id = '00000000-0000-0000-0000-000000000022'
     where id = '00000000-0000-0000-0000-000000000010'$$,
   '23503',
-  'violates foreign key constraint.*',
+  null,
   'latest revision pointer must reference a revision of the same entity'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.content_entities
     set published_revision_id = '00000000-0000-0000-0000-000000000022'
     where id = '00000000-0000-0000-0000-000000000010'$$,
@@ -186,7 +186,7 @@ select throws_like(
   'cross-entity published pointer is rejected by the consistency guard'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.publications (entity_id, revision_id, status, published_at)
     values (
       '00000000-0000-0000-0000-000000000010',
@@ -195,14 +195,14 @@ select throws_like(
       now()
     )$$,
   '23503',
-  'violates foreign key constraint.*',
+  null,
   'publication revision must belong to its entity'
 );
 
 insert into public.media_assets (id, storage_bucket, storage_path, mime_type, byte_size, archived_at)
 values ('00000000-0000-0000-0000-000000000031', 'media', 'archived.glb', 'model/gltf-binary', 42, now());
 
-select throws_like(
+select throws_ok(
   $$insert into public.revision_dependencies (
       dependency_type, source_entity_id, source_revision_id, target_media_asset_id
     ) values (
@@ -233,7 +233,7 @@ update public.media_assets
 set archived_at = now()
 where id = '00000000-0000-0000-0000-000000000032';
 
-select throws_like(
+select throws_ok(
   $$update public.content_entities
     set published_revision_id = '00000000-0000-0000-0000-000000000021'
     where id = '00000000-0000-0000-0000-000000000010'$$,
@@ -242,7 +242,7 @@ select throws_like(
   'published revision pointer cannot select archived media'
 );
 
-select throws_like(
+select throws_ok(
   $$insert into public.publications (entity_id, revision_id, status, published_at)
     values (
       '00000000-0000-0000-0000-000000000010',
@@ -255,7 +255,7 @@ select throws_like(
   'publication cannot select a revision with archived media'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.content_entities
     set published_revision_id = '00000000-0000-0000-0000-000000000020'
     where id = '00000000-0000-0000-0000-000000000010'$$,
@@ -299,7 +299,7 @@ values (
   now()
 );
 
-select throws_like(
+select throws_ok(
   $$update public.media_assets
     set archived_at = now()
     where id = '00000000-0000-0000-0000-000000000030'$$,
@@ -308,7 +308,7 @@ select throws_like(
   'media referenced by the active published pointer cannot be archived'
 );
 
-select throws_like(
+select throws_ok(
   $$delete from public.media_assets
     where id = '00000000-0000-0000-0000-000000000030'$$,
   'P0001',
@@ -317,7 +317,7 @@ select throws_like(
 );
 
 
-select throws_like(
+select throws_ok(
   $$insert into public.content_entities (id, entity_type, slug, title, published_revision_id)
     values (
       '00000000-0000-0000-0000-000000000015',
@@ -331,7 +331,7 @@ select throws_like(
   'initial entity insert cannot bypass published pointer consistency'
 );
 
-select throws_like(
+select throws_ok(
   $$update public.publications
     set entity_id = '00000000-0000-0000-0000-000000000014'
     where entity_id = '00000000-0000-0000-0000-000000000010'
