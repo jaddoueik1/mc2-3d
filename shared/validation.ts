@@ -81,20 +81,34 @@ function safeUrl(value: unknown, path: string, errors: string[]): value is strin
     return false;
   }
 
-  if (value.startsWith('/assets/')) {
-    return true;
-  }
-
   try {
-    const parsed = new URL(value);
-    if (parsed.protocol === 'https:') {
+    const assetOrigin = 'https://assets.invalid';
+    const parsed = new URL(value, assetOrigin);
+
+    if (value.startsWith('/')) {
+      const isSafeAssetPath =
+        parsed.origin === assetOrigin &&
+        parsed.pathname.startsWith('/assets/') &&
+        parsed.username === '' &&
+        parsed.password === '' &&
+        parsed.search === '' &&
+        parsed.hash === '';
+
+      if (isSafeAssetPath) {
+        return true;
+      }
+    } else if (
+      parsed.protocol === 'https:' &&
+      parsed.username === '' &&
+      parsed.password === ''
+    ) {
       return true;
     }
   } catch {
     // The error below explains the accepted URL forms.
   }
 
-  errors.push(`${path} must be an /assets path or an https URL`);
+  errors.push(path + ' must be an /assets path or an https URL');
   return false;
 }
 
@@ -137,7 +151,7 @@ function isoDate(value: unknown, path: string, errors: string[]): value is strin
   if (!requiredString(value, path, errors)) {
     return false;
   }
-  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(value)) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     errors.push(`${path} must be an ISO date (YYYY-MM-DD)`);
     return false;
   }
