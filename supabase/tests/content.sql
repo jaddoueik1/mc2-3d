@@ -1,0 +1,175 @@
+begin;
+
+select plan(11);
+
+insert into public.geographic_scopes (id, code, name, scope_type)
+values ('00000000-0000-0000-0000-000000000001', 'BEY', 'Beirut', 'city');
+
+insert into public.content_entities (
+  id, entity_type, slug, title, metric_key, geographic_scope_id, period_start, period_end
+) values (
+  '00000000-0000-0000-0000-000000000010',
+  'observation',
+  'population-beirut-2025',
+  'Population, Beirut 2025',
+  'population',
+  '00000000-0000-0000-0000-000000000001',
+  date '2025-01-01',
+  date '2025-12-31'
+);
+
+select throws_ok(
+  $$insert into public.content_entities (
+      id, entity_type, slug, title, metric_key, geographic_scope_id, period_start, period_end
+    ) values (
+      '00000000-0000-0000-0000-000000000011',
+      'observation',
+      'population-beirut-2025-copy',
+      'Duplicate population observation',
+      'population',
+      '00000000-0000-0000-0000-000000000001',
+      date '2025-01-01',
+      date '2025-12-31'
+    )$$,
+  '23505',
+  '%',
+  'duplicate observation stable identity is rejected'
+);
+
+insert into public.content_revisions (id, entity_id, revision_number, content)
+values ('00000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000010', 1, '{"value": 100}');
+
+select lives_ok(
+  $$insert into public.content_revisions (id, entity_id, revision_number, content)
+    values ('00000000-0000-0000-0000-000000000021', '00000000-0000-0000-0000-000000000010', 2, '{"value": 110}')$$,
+  'a second revision for the same stable entity is allowed'
+);
+
+select throws_ok(
+  $$insert into public.content_entities (id, entity_type, slug, title, building_entity_id)
+    values (
+      '00000000-0000-0000-0000-000000000012',
+      'tour',
+      'missing-building',
+      'Missing building reference',
+      'ffffffff-ffff-ffff-ffff-ffffffffffff'
+    )$$,
+  '23503',
+  '%',
+  'missing building reference is rejected'
+);
+
+select throws_ok(
+  $$insert into public.revision_dependencies (
+      dependency_type, source_entity_id, source_revision_id, target_entity_id, target_revision_id
+    ) values (
+      'source',
+      '00000000-0000-0000-0000-000000000010',
+      '00000000-0000-0000-0000-000000000020',
+      'ffffffff-ffff-ffff-ffff-ffffffffffff',
+      'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
+    )$$,
+  '23503',
+  '%',
+  'missing dependency target revision is rejected'
+);
+
+select throws_ok(
+  $$update public.content_revisions
+    set content = '{"value": 999}'
+    where id = '00000000-0000-0000-0000-000000000020'$$,
+  'P0001',
+  '%',
+  'historical revision updates are denied'
+);
+
+select throws_ok(
+  $$delete from public.content_revisions
+    where id = '00000000-0000-0000-0000-000000000020'$$,
+  'P0001',
+  '%',
+  'historical revision deletes are denied'
+);
+
+insert into public.media_assets (id, storage_bucket, storage_path, mime_type, byte_size)
+values ('00000000-0000-0000-0000-000000000030', 'media', 'building.glb', 'model/gltf-binary', 42);
+
+insert into public.revision_dependencies (
+  id, dependency_type, source_entity_id, source_revision_id, target_media_asset_id
+) values (
+  '00000000-0000-0000-0000-000000000040',
+  'model',
+  '00000000-0000-0000-0000-000000000010',
+  '00000000-0000-0000-0000-000000000020',
+  '00000000-0000-0000-0000-000000000030'
+);
+
+select throws_ok(
+  $$update public.revision_dependencies
+    set dependency_type = 'changed'
+    where id = '00000000-0000-0000-0000-000000000040'$$,
+  'P0001',
+  '%',
+  'historical dependency updates are denied'
+);
+
+select throws_ok(
+  $$delete from public.revision_dependencies
+    where id = '00000000-0000-0000-0000-000000000040'$$,
+  'P0001',
+  '%',
+  'historical dependency deletes are denied'
+);
+
+select throws_ok(
+  $$insert into public.content_entities (
+      id, entity_type, slug, title, metric_key, geographic_scope_id, period_start, period_end
+    ) values (
+      '00000000-0000-0000-0000-000000000013',
+      'observation',
+      'invalid-period',
+      'Invalid period',
+      'rainfall',
+      '00000000-0000-0000-0000-000000000001',
+      date '2025-12-31',
+      date '2025-01-01'
+    )$$,
+  '23514',
+  '%',
+  'observation period end cannot precede period start'
+);
+
+insert into public.content_entities (id, entity_type, slug, title)
+values ('00000000-0000-0000-0000-000000000014', 'metric', 'another-metric', 'Another metric');
+
+insert into public.content_revisions (id, entity_id, revision_number, content)
+values ('00000000-0000-0000-0000-000000000022', '00000000-0000-0000-0000-000000000014', 1, '{"value": 1}');
+
+select throws_ok(
+  $$update public.content_entities
+    set latest_revision_id = '00000000-0000-0000-0000-000000000022'
+    where id = '00000000-0000-0000-0000-000000000010'$$,
+  '23503',
+  '%',
+  'revision pointer must reference a revision of the same entity'
+);
+
+insert into public.publications (entity_id, revision_id, status, published_at)
+values (
+  '00000000-0000-0000-0000-000000000010',
+  '00000000-0000-0000-0000-000000000020',
+  'published',
+  now()
+);
+
+select throws_ok(
+  $$update public.media_assets
+    set archived_at = now()
+    where id = '00000000-0000-0000-0000-000000000030'$$,
+  'P0001',
+  '%',
+  'media referenced by an active published revision cannot be archived'
+);
+
+select * from finish();
+rollback;
