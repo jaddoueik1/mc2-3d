@@ -5,6 +5,7 @@ import {
   createCapabilityGuard,
   type Capability,
 } from '../server/auth.ts';
+import { errorResponse, HttpError } from '../server/http.ts';
 
 const userId = '00000000-0000-0000-0000-000000000101';
 
@@ -79,5 +80,51 @@ describe('requireCapability', () => {
       () => guard(request('valid-token'), 'content.publish'),
       (error: unknown) => error instanceof AuthorizationError && error.status === 403,
     );
+  });
+});
+
+describe('errorResponse', () => {
+  it('serializes an authentication failure as the standardized 401 response', async () => {
+    const response = errorResponse(
+      new AuthorizationError(401, 'UNAUTHENTICATED', 'A bearer token is required.'),
+      request(),
+    );
+    const body = (await response.json()) as { error: { code: string; requestId: string } };
+
+    assert.equal(response.status, 401);
+    assert.equal(body.error.code, 'UNAUTHENTICATED');
+    assert.equal(response.headers.get('cache-control'), 'private, no-store');
+    assert.equal(response.headers.get('x-request-id'), body.error.requestId);
+    assert.ok(body.error.requestId.length > 0);
+  });
+
+  it('serializes authorization failures and reuses an inbound request ID', async () => {
+    const upstreamRequest = new Request('https://cms.example.test/api/private', {
+      headers: { 'x-request-id': 'gateway-request-123' },
+    });
+    const response = errorResponse(
+      new AuthorizationError(403, 'FORBIDDEN', 'You do not have this capability.'),
+      upstreamRequest,
+    );
+    const body = (await response.json()) as { error: { code: string; requestId: string } };
+
+    assert.equal(response.status, 403);
+    assert.equal(body.error.code, 'FORBIDDEN');
+    assert.equal(body.error.requestId, 'gateway-request-123');
+    assert.equal(response.headers.get('x-request-id'), 'gateway-request-123');
+  });
+
+  it('keeps field errors in the standardized response envelope', async () => {
+    const response = errorResponse(
+      new HttpError(422, 'VALIDATION_ERROR', 'Input is invalid.', { title: ['Required'] }),
+    );
+    const body = (await response.json()) as {
+      error: { code: string; fieldErrors?: Record<string, string[]>; requestId: string };
+    };
+
+    assert.equal(response.status, 422);
+    assert.equal(body.error.code, 'VALIDATION_ERROR');
+    assert.deepEqual(body.error.fieldErrors, { title: ['Required'] });
+    assert.equal(response.headers.get('x-request-id'), body.error.requestId);
   });
 });

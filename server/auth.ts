@@ -22,13 +22,18 @@ export type CapabilityDependencies = {
 };
 
 export class AuthorizationError extends Error {
+  readonly status: 401 | 403 | 500;
+  readonly code: 'UNAUTHENTICATED' | 'FORBIDDEN' | 'AUTH_CONFIGURATION_ERROR';
+
   constructor(
-    readonly status: 401 | 403 | 500,
-    readonly code: 'UNAUTHENTICATED' | 'FORBIDDEN' | 'AUTH_CONFIGURATION_ERROR',
+    status: 401 | 403 | 500,
+    code: 'UNAUTHENTICATED' | 'FORBIDDEN' | 'AUTH_CONFIGURATION_ERROR',
     message: string,
   ) {
     super(message);
     this.name = 'AuthorizationError';
+    this.status = status;
+    this.code = code;
   }
 }
 

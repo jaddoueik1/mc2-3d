@@ -1,6 +1,6 @@
 begin;
 
-select plan(9);
+select plan(13);
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at
@@ -60,6 +60,30 @@ select throws_ok(
   'P0001',
   'users may not grant themselves roles',
   'user cannot self-grant'
+);
+select lives_ok(
+  $$select public.grant_role_to_user('00000000-0000-0000-0000-000000000101', 'publisher')$$,
+  'administrator can add a second role'
+);
+
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000101', true);
+select ok(
+  public.has_current_capability('content.edit')
+  and public.has_current_capability('content.publish'),
+  'combined editor and publisher roles union their capabilities'
+);
+
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000104', true);
+select lives_ok(
+  $$select public.revoke_role_from_user('00000000-0000-0000-0000-000000000101', 'publisher')$$,
+  'administrator can revoke a role'
+);
+
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000101', true);
+select ok(
+  not public.has_current_capability('content.publish')
+  and public.has_current_capability('content.edit'),
+  'current capability RPC reflects role revocation on the next call'
 );
 
 select set_config('request.jwt.claim.sub', '', true);
