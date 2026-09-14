@@ -1,6 +1,6 @@
 begin;
 
-select plan(19);
+select plan(22);
 
 insert into public.geographic_scopes (id, code, name, scope_type)
 values ('00000000-0000-0000-0000-000000000001', 'BEY', 'Beirut', 'city');
@@ -255,9 +255,49 @@ select throws_like(
   'publication cannot select a revision with archived media'
 );
 
-update public.content_entities
-set published_revision_id = '00000000-0000-0000-0000-000000000020'
-where id = '00000000-0000-0000-0000-000000000010';
+select throws_like(
+  $$update public.content_entities
+    set published_revision_id = '00000000-0000-0000-0000-000000000020'
+    where id = '00000000-0000-0000-0000-000000000010'$$,
+  'P0001',
+  'published revision pointer must match the active publication',
+  'directly setting a divergent published pointer is denied'
+);
+
+insert into public.publications (entity_id, revision_id, status, published_at)
+values (
+  '00000000-0000-0000-0000-000000000010',
+  '00000000-0000-0000-0000-000000000020',
+  'published',
+  now()
+);
+
+select is(
+  (select published_revision_id from public.content_entities
+    where id = '00000000-0000-0000-0000-000000000010'),
+  '00000000-0000-0000-0000-000000000020'::uuid,
+  'active publication synchronizes the published revision pointer'
+);
+
+update public.publications
+set status = 'withdrawn', unpublished_at = now()
+where entity_id = '00000000-0000-0000-0000-000000000010'
+  and revision_id = '00000000-0000-0000-0000-000000000020';
+
+select is(
+  (select published_revision_id from public.content_entities
+    where id = '00000000-0000-0000-0000-000000000010'),
+  null::uuid,
+  'withdrawing the active publication clears the published revision pointer'
+);
+
+insert into public.publications (entity_id, revision_id, status, published_at)
+values (
+  '00000000-0000-0000-0000-000000000010',
+  '00000000-0000-0000-0000-000000000020',
+  'published',
+  now()
+);
 
 select throws_like(
   $$update public.media_assets
