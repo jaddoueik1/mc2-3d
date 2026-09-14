@@ -145,8 +145,10 @@ values ('00000000-0000-0000-0000-000000000014', 'metric', 'another-metric', 'Ano
 insert into public.content_revisions (id, entity_id, revision_number, content)
 values ('00000000-0000-0000-0000-000000000022', '00000000-0000-0000-0000-000000000014', 1, '{"value": 1}');
 
+set constraints content_entities_latest_revision_fkey immediate;
+
 select throws_ok(
-  $$update public.content_entities
+  $update public.content_entities
     set latest_revision_id = '00000000-0000-0000-0000-000000000022'
     where id = '00000000-0000-0000-0000-000000000010'$$,
   '23503',
