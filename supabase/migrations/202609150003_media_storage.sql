@@ -63,6 +63,16 @@ create trigger media_assets_ready_immutable
 before update on public.media_assets
 for each row execute function public.reject_ready_media_mutation();
 
+create table public.media_upload_grants (
+  asset_id uuid primary key references public.media_assets(id) on delete cascade,
+  expires_at timestamptz not null,
+  claimed_at timestamptz,
+  created_at timestamptz not null default now(),
+  check (expires_at > created_at)
+);
+
+revoke all on public.media_upload_grants from anon, authenticated;
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
   (
@@ -91,7 +101,7 @@ for insert
 to authenticated
 with check (
   bucket_id = 'cms-media-private'
-  and owner_id = auth.uid()
+  and owner_id = auth.uid()::text
   and public.has_current_capability('media.manage')
 );
 
@@ -102,12 +112,12 @@ for update
 to authenticated
 using (
   bucket_id = 'cms-media-private'
-  and owner_id = auth.uid()
+  and owner_id = auth.uid()::text
   and public.has_current_capability('media.manage')
 )
 with check (
   bucket_id = 'cms-media-private'
-  and owner_id = auth.uid()
+  and owner_id = auth.uid()::text
   and public.has_current_capability('media.manage')
 );
 
@@ -118,7 +128,7 @@ for delete
 to authenticated
 using (
   bucket_id = 'cms-media-private'
-  and owner_id = auth.uid()
+  and owner_id = auth.uid()::text
   and public.has_current_capability('media.manage')
 );
 
@@ -174,7 +184,7 @@ as $$
     );
 $$;
 
-revoke all on function public.resolve_published_media_asset(uuid) from public;
-grant execute on function public.resolve_published_media_asset(uuid) to anon, authenticated;
+revoke all on function public.resolve_published_media_asset(uuid) from public, anon, authenticated;
+grant execute on function public.resolve_published_media_asset(uuid) to service_role;
 
 commit;

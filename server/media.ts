@@ -20,6 +20,8 @@ export type MediaAsset = {
 
 export type MediaRepository = {
   createUploading(asset: MediaAsset): Promise<void>;
+  createFinalizationGrant(assetId: string, expiresAt: string): Promise<void>;
+  claimFinalizationGrant(assetId: string, now: string): Promise<boolean>;
   getAsset(id: string): Promise<MediaAsset | null>;
   markReady(id: string, patch: Pick<MediaAsset, 'byteSize' | 'mimeType' | 'sha256'>): Promise<void>;
   setPublicKey(id: string, publicKey: string): Promise<void>;
@@ -136,24 +138,36 @@ function readU32(bytes: Uint8Array, offset: number, littleEndian: boolean): numb
   return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, littleEndian);
 }
 
+function crc32(bytes: Uint8Array): number {
+  let value = 0xffffffff;
+  for (const byte of bytes) {
+    value ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+  }
+  return (value ^ 0xffffffff) >>> 0;
+}
+
+function saneDimensions(width: number, height: number): boolean {
+  return width > 0 && height > 0 && width <= 100000 && height <= 100000 && width * height <= 100_000_000;
+}
+
 function isPng(bytes: Uint8Array): boolean {
   const signature = [137, 80, 78, 71, 13, 10, 26, 10];
-  if (bytes.length < 33 || !signature.every((part, index) => bytes[index] === part)) return false;
+  if (!signature.every((part, index) => bytes[index] === part)) return false;
   let offset = 8;
   let sawIhdr = false;
+  let sawIdat = false;
   while (offset + 12 <= bytes.length) {
     const length = readU32(bytes, offset, false);
     if (length > bytes.length - offset - 12) return false;
     const type = String.fromCharCode(...bytes.slice(offset + 4, offset + 8));
-    if (!sawIhdr) {
-      if (type !== 'IHDR' || length !== 13) return false;
-      const width = readU32(bytes, offset + 8, false);
-      const height = readU32(bytes, offset + 12, false);
-      if (width === 0 || height === 0) return false;
-      sawIhdr = true;
-    }
-    offset += 12 + length;
-    if (type === 'IEND') return offset === bytes.length;
+    const bodyEnd = offset + 8 + length;
+    if (readU32(bytes, bodyEnd, false) !== crc32(bytes.slice(offset + 4, bodyEnd))) return false;
+    if (!sawIhdr && (type !== 'IHDR' || length !== 13 || !saneDimensions(readU32(bytes, offset + 8, false), readU32(bytes, offset + 12, false)))) return false;
+    sawIhdr ||= type === 'IHDR';
+    if (type === 'IDAT') sawIdat = true;
+    offset = bodyEnd + 4;
+    if (type === 'IEND') return sawIhdr && sawIdat && length === 0 && offset === bytes.length;
   }
   return false;
 }
@@ -161,49 +175,63 @@ function isPng(bytes: Uint8Array): boolean {
 function isJpeg(bytes: Uint8Array): boolean {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false;
   let offset = 2;
-  let sawFrame = false;
-  while (offset + 4 <= bytes.length) {
-    if (bytes[offset] !== 0xff) return false;
+  let frame = false;
+  let sos = false;
+  while (offset < bytes.length) {
+    if (bytes[offset++] !== 0xff) return false;
     while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
     if (offset >= bytes.length) return false;
     const marker = bytes[offset++];
-    if (marker === 0xd9) return sawFrame;
+    if (marker === 0xd9) return frame && sos && offset === bytes.length;
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
     if (offset + 2 > bytes.length) return false;
     const length = (bytes[offset] << 8) | bytes[offset + 1];
     if (length < 2 || offset + length > bytes.length) return false;
-    if (
-      (marker >= 0xc0 && marker <= 0xc3) ||
-      (marker >= 0xc5 && marker <= 0xc7) ||
-      (marker >= 0xc9 && marker <= 0xcb) ||
-      (marker >= 0xcd && marker <= 0xcf)
-    ) {
-      if (length < 8 || bytes[offset + 3] === 0 || bytes[offset + 4] === 0 || bytes[offset + 5] === 0 || bytes[offset + 6] === 0) {
-        return false;
-      }
-      sawFrame = true;
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      if (length < 8 || !saneDimensions((bytes[offset + 5] << 8) | bytes[offset + 6], (bytes[offset + 3] << 8) | bytes[offset + 4])) return false;
+      frame = true;
     }
     offset += length;
+    if (marker === 0xda) {
+      sos = true;
+      while (offset < bytes.length - 1) {
+        if (bytes[offset++] !== 0xff) continue;
+        const next = bytes[offset++];
+        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) continue;
+        if (next === 0xd9) return frame && offset === bytes.length;
+        offset -= 2;
+        break;
+      }
+    }
   }
   return false;
 }
 
 function isGif(bytes: Uint8Array): boolean {
-  return (
-    bytes.length >= 13 &&
-    (new TextDecoder().decode(bytes.slice(0, 6)) === 'GIF87a' ||
-      new TextDecoder().decode(bytes.slice(0, 6)) === 'GIF89a') &&
-    bytes[6] + (bytes[7] << 8) > 0 &&
-    bytes[8] + (bytes[9] << 8) > 0 &&
-    bytes[bytes.length - 1] === 0x3b
-  );
+  if (bytes.length < 14 || (new TextDecoder().decode(bytes.slice(0, 6)) !== 'GIF87a' && new TextDecoder().decode(bytes.slice(0, 6)) !== 'GIF89a') || !saneDimensions(bytes[6] | bytes[7] << 8, bytes[8] | bytes[9] << 8)) return false;
+  let offset = 13 + (bytes[10] & 0x80 ? 3 * (1 << ((bytes[10] & 7) + 1)) : 0);
+  let image = false;
+  while (offset < bytes.length) {
+    const marker = bytes[offset++];
+    if (marker === 0x3b) return image && offset === bytes.length;
+    if (marker === 0x2c) {
+      if (offset + 9 > bytes.length || !saneDimensions(bytes[offset + 4] | bytes[offset + 5] << 8, bytes[offset + 6] | bytes[offset + 7] << 8)) return false;
+      offset += 9 + (bytes[offset + 8] & 0x80 ? 3 * (1 << ((bytes[offset + 8] & 7) + 1)) : 0);
+      if (offset >= bytes.length || bytes[offset++] < 2) return false;
+      image = true;
+    } else if (marker !== 0x21 || offset >= bytes.length) return false;
+    else offset += 1;
+    while (offset < bytes.length) { const size = bytes[offset++]; if (size === 0) break; if (offset + size > bytes.length) return false; offset += size; }
+  }
+  return false;
 }
 
 function isWebp(bytes: Uint8Array): boolean {
-  if (bytes.length < 16 || new TextDecoder().decode(bytes.slice(0, 4)) !== 'RIFF') return false;
-  if (new TextDecoder().decode(bytes.slice(8, 12)) !== 'WEBP') return false;
-  const declared = readU32(bytes, 4, true);
-  return declared + 8 === bytes.length && /^(VP8 |VP8L|VP8X)$/.test(new TextDecoder().decode(bytes.slice(12, 16)));
+  if (bytes.length < 20 || new TextDecoder().decode(bytes.slice(0, 4)) !== 'RIFF' || readU32(bytes, 4, true) + 8 !== bytes.length || new TextDecoder().decode(bytes.slice(8, 12)) !== 'WEBP') return false;
+  const type = new TextDecoder().decode(bytes.slice(12, 16));
+  if (type === 'VP8X' && bytes.length >= 30) return saneDimensions(1 + bytes[24] + (bytes[25] << 8) + (bytes[26] << 16), 1 + bytes[27] + (bytes[28] << 8) + (bytes[29] << 16));
+  if (type === 'VP8L' && bytes.length >= 25 && bytes[20] === 0x2f) return saneDimensions(1 + ((bytes[21] | bytes[22] << 8) & 0x3fff), 1 + (((bytes[22] >> 6) | bytes[23] << 2 | (bytes[24] & 0x0f) << 10) & 0x3fff));
+  return type === 'VP8 ' && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 1 && bytes[25] === 0x2a && saneDimensions((bytes[26] | bytes[27] << 8) & 0x3fff, (bytes[28] | bytes[29] << 8) & 0x3fff);
 }
 
 function inspectImage(bytes: Uint8Array): { mimeType: string } | null {
@@ -215,7 +243,7 @@ function inspectImage(bytes: Uint8Array): { mimeType: string } | null {
 }
 
 function validateGlb(bytes: Uint8Array): string | null {
-  if (bytes.length < 20) return 'GLB data is too short.';
+  if (bytes.length < 20 || bytes.length % 4 !== 0) return 'GLB data is not four-byte aligned.';
   const magic = readU32(bytes, 0, true);
   const version = readU32(bytes, 4, true);
   const declaredLength = readU32(bytes, 8, true);
@@ -226,12 +254,13 @@ function validateGlb(bytes: Uint8Array): string | null {
   let offset = 12;
   let json: Record<string, unknown> | null = null;
   let chunkCount = 0;
+  let bin: Uint8Array | null = null;
   while (offset < bytes.length) {
     if (offset + 8 > bytes.length) return 'GLB chunk header is truncated.';
     const length = readU32(bytes, offset, true);
     const type = readU32(bytes, offset + 4, true);
     offset += 8;
-    if (length > bytes.length - offset) return 'GLB chunk exceeds declared length.';
+    if (length % 4 !== 0 || length > bytes.length - offset) return 'GLB chunk exceeds declared length.';
     if (chunkCount === 0) {
       if (type !== 0x4e4f534a) return 'The first GLB chunk must be JSON.';
       try {
@@ -241,6 +270,9 @@ function validateGlb(bytes: Uint8Array): string | null {
       } catch {
         return 'GLB JSON is invalid.';
       }
+    } else {
+      if (type !== 0x004e4942 || bin) return 'GLB may contain only one BIN chunk after JSON.';
+      bin = bytes.slice(offset, offset + length);
     }
     offset += length;
     chunkCount += 1;
@@ -250,6 +282,28 @@ function validateGlb(bytes: Uint8Array): string | null {
   const asset = json.asset;
   if (!asset || typeof asset !== 'object' || Array.isArray(asset) || (asset as Record<string, unknown>).version !== '2.0') {
     return 'GLB asset version must be 2.0.';
+  }
+
+  const buffers = json.buffers;
+  if (buffers !== undefined && !Array.isArray(buffers)) return 'GLB buffers must be an array.';
+  if (Array.isArray(buffers)) {
+    for (const buffer of buffers) {
+      if (!buffer || typeof buffer !== 'object' || Array.isArray(buffer)) return 'GLB buffer is invalid.';
+      const entry = buffer as Record<string, unknown>;
+      if (!Number.isSafeInteger(entry.byteLength) || (entry.byteLength as number) < 0) return 'GLB buffer length is invalid.';
+      if (entry.uri === undefined && (!bin || entry.byteLength > bin.byteLength)) return 'GLB BIN data is missing or short.';
+      if (entry.uri !== undefined && !decodeEmbeddedDataUri(entry.uri, GLB_LIMIT)) return 'GLB buffer URI is external or malformed.';
+    }
+  }
+  const views = json.bufferViews;
+  if (views !== undefined && !Array.isArray(views)) return 'GLB bufferViews must be an array.';
+  if (Array.isArray(views)) for (const view of views) {
+    if (!view || typeof view !== 'object' || Array.isArray(view)) return 'GLB bufferView is invalid.';
+    const entry = view as Record<string, unknown>;
+    const index = entry.buffer;
+    const length = entry.byteLength;
+    const begin = entry.byteOffset ?? 0;
+    if (!Number.isInteger(index) || !Number.isSafeInteger(length) || !Number.isSafeInteger(begin) || index < 0 || length < 0 || begin < 0 || !Array.isArray(buffers) || !buffers[index] || typeof buffers[index] !== 'object' || begin + length > ((buffers[index] as Record<string, unknown>).byteLength as number)) return 'GLB bufferView is out of bounds.';
   }
 
   for (const collectionName of ['buffers', 'images'] as const) {
@@ -326,6 +380,10 @@ export function createSupabaseMediaDependencies(
         headers: { 'content-type': 'application/json', prefer: 'return=minimal' },
         body: JSON.stringify({
           id: asset.id,
+          storage_bucket: asset.privateBucket,
+          storage_path: asset.privateKey,
+          mime_type: 'application/octet-stream',
+          byte_size: 0,
           created_by: asset.ownerId,
           asset_kind: asset.type,
           lifecycle_status: asset.status,
@@ -339,6 +397,27 @@ export function createSupabaseMediaDependencies(
         }),
       });
       if (!response.ok) throw new Error('Could not create media asset.');
+    },
+    async createFinalizationGrant(assetId, expiresAt) {
+      const response = await request('/rest/v1/media_upload_grants', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', prefer: 'return=minimal' },
+        body: JSON.stringify({ asset_id: assetId, expires_at: expiresAt }),
+      });
+      if (!response.ok) throw new Error('Could not create finalization grant.');
+    },
+    async claimFinalizationGrant(assetId, now) {
+      const response = await request(
+        '/rest/v1/media_upload_grants?asset_id=eq.' + encodeURIComponent(assetId) +
+          '&claimed_at=is.null&expires_at=gt.' + encodeURIComponent(now),
+        {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json', prefer: 'return=representation' },
+          body: JSON.stringify({ claimed_at: now }),
+        },
+      );
+      if (!response.ok) throw new Error('Could not claim finalization grant.');
+      return ((await response.json()) as unknown[]).length === 1;
     },
     async getAsset(id) {
       const response = await request('/rest/v1/media_assets?id=eq.' + encodeURIComponent(id) + '&select=*');
@@ -423,7 +502,7 @@ export function createSupabaseMediaDependencies(
       const response = await request('/storage/v1/object/copy', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sourceBucket, sourceKey, destinationBucket, destinationKey }),
+        body: JSON.stringify({ bucketId: sourceBucket, sourceKey, destinationBucket, destinationKey }),
       });
       if (!response.ok) throw new Error('Could not copy media object.');
     },
@@ -478,12 +557,13 @@ export function createMediaService(dependencies: MediaDependencies) {
       sha256: null,
       finalizedAt: null,
     };
+    const expiresAt = new Date(now().getTime() + UPLOAD_GRANT_SECONDS * 1000).toISOString();
     try {
       await repository.createUploading(asset);
+      await repository.createFinalizationGrant(asset.id, expiresAt);
     } catch {
       return fail(502, 'MEDIA_RECORD_FAILED', 'Could not create the media record.');
     }
-    const expiresAt = new Date(now().getTime() + UPLOAD_GRANT_SECONDS * 1000).toISOString();
     return { status: 201, data: { asset, uploadUrl: grant.url, uploadToken: grant.token, privateKey, expiresAt } };
   }
 
@@ -491,6 +571,9 @@ export function createMediaService(dependencies: MediaDependencies) {
     const asset = await repository.getAsset(assetId);
     if (!asset) return fail(404, 'MEDIA_NOT_FOUND', 'Media asset was not found.');
     if (asset.status === 'ready') return { status: 200, data: asset };
+    if (!(await repository.claimFinalizationGrant(asset.id, now().toISOString()))) {
+      return fail(409, 'UPLOAD_GRANT_EXPIRED', 'The app finalization grant has expired or was already used.');
+    }
 
     const bytes = await storage.getObject(asset.privateBucket, asset.privateKey);
     if (!bytes) return fail(400, 'UPLOAD_MISSING', 'No upload was found for this media asset.');
@@ -532,7 +615,10 @@ export function createMediaService(dependencies: MediaDependencies) {
     try {
       await storage.copyObject(asset.privateBucket, asset.privateKey, asset.publicBucket, key);
     } catch {
-      return fail(502, 'PUBLIC_COPY_FAILED', 'Copying media to public storage failed.');
+      const existing = await storage.getObject(asset.publicBucket, key);
+      if (!existing || existing.byteLength !== asset.byteSize || (await sha256Hex(existing)) !== asset.sha256) {
+        return fail(502, 'PUBLIC_COPY_FAILED', 'Copying media to public storage failed.');
+      }
     }
     await repository.setPublicKey(asset.id, key);
     return { status: 200, data: { key } };
@@ -567,7 +653,7 @@ export type MediaService = ReturnType<typeof createMediaService>;
 
 function resultResponse(result: MediaResult<unknown>, request: Request): Response {
   if ('error' in result) {
-    return privateJson({ error: result.error }, { status: result.status }, request);
+    return errorResponse(new HttpError(result.status, result.error.code, result.error.message), request);
   }
   return privateJson({ data: result.data }, { status: result.status }, request);
 }

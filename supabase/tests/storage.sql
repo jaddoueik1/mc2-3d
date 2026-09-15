@@ -1,6 +1,6 @@
 begin;
 
-select plan(6);
+select plan(8);
 
 select is(
   (select public from storage.buckets where id = 'cms-media-private'),
@@ -34,6 +34,21 @@ select ok(
   ),
   'unauthorized callers have no direct private storage read policy'
 );
+
+set local role authenticated;
+select throws_ok(
+  $insert into storage.objects (bucket_id, name, owner_id)
+    values ('cms-media-private', 'private/unauthorized', '00000000-0000-0000-0000-000000000299')$,
+  '42501',
+  null,
+  'unauthorized direct storage upload is rejected by RLS'
+);
+select is(
+  (select count(*) from storage.objects where bucket_id = 'cms-media-private' and name = 'private/unauthorized'),
+  0::bigint,
+  'unauthorized caller cannot read private storage objects'
+);
+reset role;
 
 insert into public.geographic_scopes (id, code, name, scope_type)
 values ('00000000-0000-0000-0000-000000000201', 'MED', 'Media test scope', 'city');

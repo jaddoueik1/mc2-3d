@@ -29,21 +29,27 @@ function validGlb(): Uint8Array {
 }
 
 function validPng(): Uint8Array {
-  return new Uint8Array([
-    137, 80, 78, 71, 13, 10, 26, 10,
-    0, 0, 0, 13, 73, 72, 68, 82,
-    0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0,
-    0, 0, 0, 0,
-    0, 0, 0, 0, 73, 69, 78, 68, 0, 0, 0, 0,
-  ]);
+  return Uint8Array.from(globalThis.atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLqXQAAAABJRU5ErkJggg=='), (part) => part.charCodeAt(0));
 }
 
 class MemoryRepository implements MediaRepository {
   readonly assets = new Map<string, MediaAsset>();
   readonly published = new Set<string>();
+  readonly grants = new Map<string, { expiresAt: string; claimed: boolean }>();
 
   async createUploading(asset: MediaAsset): Promise<void> {
     this.assets.set(asset.id, asset);
+  }
+
+  async createFinalizationGrant(assetId: string, expiresAt: string): Promise<void> {
+    this.grants.set(assetId, { expiresAt, claimed: false });
+  }
+
+  async claimFinalizationGrant(assetId: string, now: string): Promise<boolean> {
+    const grant = this.grants.get(assetId);
+    if (!grant || grant.claimed || grant.expiresAt <= now) return false;
+    grant.claimed = true;
+    return true;
   }
 
   async getAsset(id: string): Promise<MediaAsset | null> {
@@ -160,6 +166,8 @@ describe('media lifecycle', () => {
       bytes: 1024,
     }));
     assert.equal(response.status, 403);
+    const body = (await response.json()) as { error: { requestId: string } };
+    assert.equal(response.headers.get('x-request-id'), body.error.requestId);
   });
 
   it('returns a private, ten-minute signed preview URL only to media managers', async () => {
@@ -219,7 +227,7 @@ describe('media lifecycle', () => {
     const resolved = await service.resolvePublishedMedia(upload.data.asset.id);
     assert.equal(resolved.status, 200);
     if (resolved.status === 200) {
-      assert.match(resolved.data.key, /^assets\\/[0-9a-f-]{36}\\/[a-f0-9]{64}$/);
+      assert.match(resolved.data.key, /^assets\/[0-9a-f-]{36}\/[a-f0-9]{64}$/);
       assert.match(resolved.data.url, /^https:\/\/public/);
     }
   });
