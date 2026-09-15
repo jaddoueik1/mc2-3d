@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { errorResponse, HttpError, jsonResponse, privateJson } from './http.ts';
 
 export type MediaType = 'glb' | 'image';
@@ -20,20 +21,14 @@ export type MediaAsset = {
 
 export type MediaRepository = {
   createUploading(asset: MediaAsset): Promise<void>;
-  createFinalizationGrant(assetId: string, expiresAt: string): Promise<void>;
-  claimFinalizationGrant(assetId: string, now: string): Promise<boolean>;
+  createUploadGrant(asset: MediaAsset): Promise<{ expiresAt: string }>;
   getAsset(id: string): Promise<MediaAsset | null>;
-  markReady(id: string, patch: Pick<MediaAsset, 'byteSize' | 'mimeType' | 'sha256'>): Promise<void>;
+  finalizeValidatedAsset(asset: MediaAsset, patch: { byteSize: number; mimeType: string; sha256: string }): Promise<MediaAsset | null>;
   setPublicKey(id: string, publicKey: string): Promise<void>;
   findPublishedReadyAsset(id: string): Promise<MediaAsset | null>;
 };
 
 export type MediaStorage = {
-  createUploadGrant(
-    bucket: string,
-    key: string,
-    expiresInSeconds: number,
-  ): Promise<{ url: string; token: string; expiresInSeconds?: number }>;
   getObject(bucket: string, key: string): Promise<Uint8Array | null>;
   createSignedUrl(bucket: string, key: string, expiresInSeconds: number): Promise<string>;
   copyObject(
@@ -110,7 +105,7 @@ function isImmutablePublicKey(asset: MediaAsset): boolean {
 }
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new Uint8Array(bytes).buffer);
   return Array.from(new Uint8Array(digest), (part) => part.toString(16).padStart(2, '0')).join('');
 }
 
@@ -173,58 +168,16 @@ function isPng(bytes: Uint8Array): boolean {
 }
 
 function isJpeg(bytes: Uint8Array): boolean {
-  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false;
-  let offset = 2;
-  let frame = false;
-  let sos = false;
-  while (offset < bytes.length) {
-    if (bytes[offset++] !== 0xff) return false;
-    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
-    if (offset >= bytes.length) return false;
-    const marker = bytes[offset++];
-    if (marker === 0xd9) return frame && sos && offset === bytes.length;
-    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-    if (offset + 2 > bytes.length) return false;
-    const length = (bytes[offset] << 8) | bytes[offset + 1];
-    if (length < 2 || offset + length > bytes.length) return false;
-    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
-      if (length < 8 || !saneDimensions((bytes[offset + 5] << 8) | bytes[offset + 6], (bytes[offset + 3] << 8) | bytes[offset + 4])) return false;
-      frame = true;
-    }
-    offset += length;
-    if (marker === 0xda) {
-      sos = true;
-      while (offset < bytes.length - 1) {
-        if (bytes[offset++] !== 0xff) continue;
-        const next = bytes[offset++];
-        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) continue;
-        if (next === 0xd9) return frame && offset === bytes.length;
-        offset -= 2;
-        break;
-      }
-    }
-  }
-  return false;
+  // Sharp performs the authoritative marker walk and full pixel decode below.
+  // This preflight deliberately checks only the JPEG signature and terminator;
+  // duplicating a decoder here risks rejecting valid entropy-coded streams.
+  return bytes.length >= 4
+    && bytes[0] === 0xff
+    && bytes[1] === 0xd8
+    && bytes[bytes.length - 2] === 0xff
+    && bytes[bytes.length - 1] === 0xd9;
 }
 
-function isGif(bytes: Uint8Array): boolean {
-  if (bytes.length < 14 || (new TextDecoder().decode(bytes.slice(0, 6)) !== 'GIF87a' && new TextDecoder().decode(bytes.slice(0, 6)) !== 'GIF89a') || !saneDimensions(bytes[6] | bytes[7] << 8, bytes[8] | bytes[9] << 8)) return false;
-  let offset = 13 + (bytes[10] & 0x80 ? 3 * (1 << ((bytes[10] & 7) + 1)) : 0);
-  let image = false;
-  while (offset < bytes.length) {
-    const marker = bytes[offset++];
-    if (marker === 0x3b) return image && offset === bytes.length;
-    if (marker === 0x2c) {
-      if (offset + 9 > bytes.length || !saneDimensions(bytes[offset + 4] | bytes[offset + 5] << 8, bytes[offset + 6] | bytes[offset + 7] << 8)) return false;
-      offset += 9 + (bytes[offset + 8] & 0x80 ? 3 * (1 << ((bytes[offset + 8] & 7) + 1)) : 0);
-      if (offset >= bytes.length || bytes[offset++] < 2) return false;
-      image = true;
-    } else if (marker !== 0x21 || offset >= bytes.length) return false;
-    else offset += 1;
-    while (offset < bytes.length) { const size = bytes[offset++]; if (size === 0) break; if (offset + size > bytes.length) return false; offset += size; }
-  }
-  return false;
-}
 
 function isWebp(bytes: Uint8Array): boolean {
   if (bytes.length < 20 || new TextDecoder().decode(bytes.slice(0, 4)) !== 'RIFF' || readU32(bytes, 4, true) + 8 !== bytes.length || new TextDecoder().decode(bytes.slice(8, 12)) !== 'WEBP') return false;
@@ -234,15 +187,27 @@ function isWebp(bytes: Uint8Array): boolean {
   return type === 'VP8 ' && bytes.length >= 30 && bytes[23] === 0x9d && bytes[24] === 1 && bytes[25] === 0x2a && saneDimensions((bytes[26] | bytes[27] << 8) & 0x3fff, (bytes[28] | bytes[29] << 8) & 0x3fff);
 }
 
-function inspectImage(bytes: Uint8Array): { mimeType: string } | null {
-  if (isPng(bytes)) return { mimeType: 'image/png' };
-  if (isJpeg(bytes)) return { mimeType: 'image/jpeg' };
-  if (isGif(bytes)) return { mimeType: 'image/gif' };
-  if (isWebp(bytes)) return { mimeType: 'image/webp' };
-  return null;
+async function inspectImage(bytes: Uint8Array): Promise<{ mimeType: string } | null> {
+  if (!bytes.length || bytes.length > IMAGE_LIMIT) return null;
+  const format = isPng(bytes) ? 'png' : isJpeg(bytes) ? 'jpeg' : isWebp(bytes) ? 'webp' : null;
+  if (!format) return null;
+  try {
+    const decoder = sharp(bytes, { failOn: 'warning', limitInputPixels: 100_000_000 });
+    const metadata = await decoder.metadata();
+    // Metadata alone does not decode pixels. Reject animations/multipage inputs and
+    // force a complete raw decode before any ready state can be persisted.
+    if (metadata.format !== format || typeof metadata.width !== 'number' || typeof metadata.height !== 'number'
+      || !saneDimensions(metadata.width, metadata.height) || (metadata.pages ?? 1) !== 1) return null;
+    const { data, info } = await decoder.raw().toBuffer({ resolveWithObject: true });
+    if (info.width !== metadata.width || info.height !== metadata.height
+      || data.length !== info.width * info.height * info.channels) return null;
+    return { mimeType: 'image/' + format };
+  } catch {
+    return null;
+  }
 }
 
-function validateGlb(bytes: Uint8Array): string | null {
+async function validateGlb(bytes: Uint8Array): Promise<string | null> {
   if (bytes.length < 20 || bytes.length % 4 !== 0) return 'GLB data is not four-byte aligned.';
   const magic = readU32(bytes, 0, true);
   const version = readU32(bytes, 4, true);
@@ -286,51 +251,74 @@ function validateGlb(bytes: Uint8Array): string | null {
 
   const buffers = json.buffers;
   if (buffers !== undefined && !Array.isArray(buffers)) return 'GLB buffers must be an array.';
+  const resolvedBuffers: Uint8Array[] = [];
   if (Array.isArray(buffers)) {
-    for (const buffer of buffers) {
+    for (const [index, buffer] of buffers.entries()) {
       if (!buffer || typeof buffer !== 'object' || Array.isArray(buffer)) return 'GLB buffer is invalid.';
       const entry = buffer as Record<string, unknown>;
-      if (!Number.isSafeInteger(entry.byteLength) || (entry.byteLength as number) < 0) return 'GLB buffer length is invalid.';
-      if (entry.uri === undefined && (!bin || entry.byteLength > bin.byteLength)) return 'GLB BIN data is missing or short.';
-      if (entry.uri !== undefined && !decodeEmbeddedDataUri(entry.uri, GLB_LIMIT)) return 'GLB buffer URI is external or malformed.';
+      const length = entry.byteLength;
+      if (typeof length !== 'number' || !Number.isSafeInteger(length) || length <= 0) return 'GLB buffer length is invalid.';
+      let actual: Uint8Array | null;
+      if (entry.uri === undefined) {
+        if (index !== 0 || !bin || length > bin.length || bin.length - length > 3) return 'GLB BIN data is missing or short.';
+        actual = bin;
+      } else {
+        actual = decodeEmbeddedDataUri(entry.uri, GLB_LIMIT);
+      }
+      if (!actual || actual.length < length) return 'GLB buffer URI is external, malformed, or shorter than byteLength.';
+      // Exclude BIN padding/unused URI bytes from all bufferView bounds.
+      resolvedBuffers.push(actual.subarray(0, length));
     }
   }
+  if (bin && (!Array.isArray(buffers) || !buffers.length || (buffers[0] as Record<string, unknown>).uri !== undefined)) return 'GLB BIN chunk has no matching buffer.';
   const views = json.bufferViews;
   if (views !== undefined && !Array.isArray(views)) return 'GLB bufferViews must be an array.';
+  const resolvedViews: Uint8Array[] = [];
   if (Array.isArray(views)) for (const view of views) {
     if (!view || typeof view !== 'object' || Array.isArray(view)) return 'GLB bufferView is invalid.';
     const entry = view as Record<string, unknown>;
     const index = entry.buffer;
     const length = entry.byteLength;
-    const begin = entry.byteOffset ?? 0;
-    if (!Number.isInteger(index) || !Number.isSafeInteger(length) || !Number.isSafeInteger(begin) || index < 0 || length < 0 || begin < 0 || !Array.isArray(buffers) || !buffers[index] || typeof buffers[index] !== 'object' || begin + length > ((buffers[index] as Record<string, unknown>).byteLength as number)) return 'GLB bufferView is out of bounds.';
+    const begin = entry.byteOffset === undefined ? 0 : entry.byteOffset;
+    if (typeof index !== 'number' || typeof length !== 'number' || typeof begin !== 'number'
+      || !Number.isSafeInteger(index) || !Number.isSafeInteger(length) || !Number.isSafeInteger(begin)
+      || index < 0 || length <= 0 || begin < 0) return 'GLB bufferView is out of bounds.';
+    const buffer = resolvedBuffers[index];
+    if (!buffer || begin > buffer.length || length > buffer.length - begin) return 'GLB bufferView is out of bounds.';
+    resolvedViews.push(buffer.subarray(begin, begin + length));
   }
 
-  for (const collectionName of ['buffers', 'images'] as const) {
-    const collection = json[collectionName];
-    if (collection === undefined) continue;
-    if (!Array.isArray(collection)) return 'GLB ' + collectionName + ' must be an array.';
-    for (const item of collection) {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return 'GLB ' + collectionName + ' entry is invalid.';
-      const uri = (item as Record<string, unknown>).uri;
-      if (uri !== undefined) {
-        const embedded = decodeEmbeddedDataUri(uri, GLB_LIMIT);
-        if (!embedded) return 'GLB may not reference external or malformed data URIs.';
-        if (collectionName === 'images' && !inspectImage(embedded)) {
-          return 'Embedded GLB images must be decodable supported images.';
-        }
-      }
+  const images = json.images;
+  if (images !== undefined && !Array.isArray(images)) return 'GLB images must be an array.';
+  if (Array.isArray(images)) for (const item of images) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return 'GLB image is invalid.';
+    const entry = item as Record<string, unknown>;
+    let embedded: Uint8Array | null;
+    let declaredMime: unknown = entry.mimeType;
+    if (entry.uri !== undefined) {
+      if (entry.bufferView !== undefined || typeof entry.uri !== 'string') return 'GLB image must have exactly one source.';
+      embedded = decodeEmbeddedDataUri(entry.uri, IMAGE_LIMIT);
+      const uriMime = /^data:([^;]+);base64,/i.exec(entry.uri)?.[1].toLowerCase();
+      if (declaredMime !== undefined && declaredMime !== uriMime) return 'GLB image MIME does not match its data URI.';
+      declaredMime = uriMime;
+    } else {
+      const index = entry.bufferView;
+      if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0) return 'GLB image bufferView is missing or invalid.';
+      embedded = resolvedViews[index] ?? null;
     }
+    if (!embedded) return 'GLB image source is external, malformed, or unresolved.';
+    const image = await inspectImage(embedded);
+    if (!image || declaredMime !== image.mimeType) return 'Embedded GLB image must decode completely and match its MIME type.';
   }
   return null;
 }
 
-function inspectBytes(expectedType: MediaType, bytes: Uint8Array): { mimeType: string } | { error: string } {
+async function inspectBytes(expectedType: MediaType, bytes: Uint8Array): Promise<{ mimeType: string } | { error: string }> {
   if (expectedType === 'glb') {
-    const error = validateGlb(bytes);
+    const error = await validateGlb(bytes);
     return error ? { error } : { mimeType: 'model/gltf-binary' };
   }
-  const image = inspectImage(bytes);
+  const image = await inspectImage(bytes);
   return image ?? { error: 'File bytes are not a supported decodable image.' };
 }
 
@@ -391,33 +379,22 @@ export function createSupabaseMediaDependencies(
           private_path: asset.privateKey,
           public_bucket: asset.publicBucket,
           public_key: asset.publicKey,
-          mime_type: asset.mimeType,
-          byte_size: asset.byteSize,
           checksum_sha256: asset.sha256,
         }),
       });
       if (!response.ok) throw new Error('Could not create media asset.');
     },
-    async createFinalizationGrant(assetId, expiresAt) {
+    async createUploadGrant(asset) {
       const response = await request('/rest/v1/media_upload_grants', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', prefer: 'return=minimal' },
-        body: JSON.stringify({ asset_id: assetId, expires_at: expiresAt }),
+        headers: { 'content-type': 'application/json', prefer: 'return=representation' },
+        // Expiry is assigned by the database (now() + 10 minutes), never the browser.
+        body: JSON.stringify({ asset_id: asset.id, owner_id: asset.ownerId, bucket_id: asset.privateBucket, object_path: asset.privateKey }),
       });
-      if (!response.ok) throw new Error('Could not create finalization grant.');
-    },
-    async claimFinalizationGrant(assetId, now) {
-      const response = await request(
-        '/rest/v1/media_upload_grants?asset_id=eq.' + encodeURIComponent(assetId) +
-          '&claimed_at=is.null&expires_at=gt.' + encodeURIComponent(now),
-        {
-          method: 'PATCH',
-          headers: { 'content-type': 'application/json', prefer: 'return=representation' },
-          body: JSON.stringify({ claimed_at: now }),
-        },
-      );
-      if (!response.ok) throw new Error('Could not claim finalization grant.');
-      return ((await response.json()) as unknown[]).length === 1;
+      if (!response.ok) throw new Error('Could not create upload grant.');
+      const rows = await response.json() as Array<{ expires_at?: unknown }>;
+      if (rows.length !== 1 || typeof rows[0].expires_at !== 'string') throw new Error('Invalid upload grant response.');
+      return { expiresAt: rows[0].expires_at };
     },
     async getAsset(id) {
       const response = await request('/rest/v1/media_assets?id=eq.' + encodeURIComponent(id) + '&select=*');
@@ -427,19 +404,23 @@ export function createSupabaseMediaDependencies(
         ? mediaAssetFromRow(rows[0] as Record<string, unknown>)
         : null;
     },
-    async markReady(id, patch) {
-      const response = await request('/rest/v1/media_assets?id=eq.' + encodeURIComponent(id), {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json', prefer: 'return=minimal' },
+    async finalizeValidatedAsset(asset, patch) {
+      const response = await request('/rest/v1/rpc/finalize_media_upload', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          lifecycle_status: 'ready',
-          byte_size: patch.byteSize,
-          mime_type: patch.mimeType,
-          checksum_sha256: patch.sha256,
-          finalized_at: new Date().toISOString(),
+          target_asset_id: asset.id,
+          verified_user_id: asset.ownerId,
+          expected_bucket: asset.privateBucket,
+          expected_path: asset.privateKey,
+          validated_byte_size: patch.byteSize,
+          validated_mime_type: patch.mimeType,
+          validated_sha256: patch.sha256,
         }),
       });
       if (!response.ok) throw new Error('Could not finalize media asset.');
+      const rows = await response.json() as Record<string, unknown>[];
+      return rows.length === 1 ? mediaAssetFromRow(rows[0]) : null;
     },
     async setPublicKey(id, publicKey) {
       const response = await request('/rest/v1/media_assets?id=eq.' + encodeURIComponent(id), {
@@ -464,23 +445,6 @@ export function createSupabaseMediaDependencies(
   };
 
   const storage: MediaStorage = {
-    async createUploadGrant(bucket, key, expiresInSeconds) {
-      const response = await request('/storage/v1/object/upload/sign/' + encodeURIComponent(bucket) + '/' + key, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) throw new Error('Could not create upload grant.');
-      const body = (await response.json()) as { url?: unknown; token?: unknown };
-      if (typeof body.url !== 'string' || typeof body.token !== 'string') {
-        throw new Error('Upload grant response was invalid.');
-      }
-      return {
-        url: body.url.startsWith('http') ? body.url : url + '/storage/v1' + body.url,
-        token: body.token,
-        expiresInSeconds,
-      };
-    },
     async getObject(bucket, key) {
       const response = await request('/storage/v1/object/' + encodeURIComponent(bucket) + '/' + key);
       if (response.status === 404) return null;
@@ -525,7 +489,7 @@ export function createMediaService(dependencies: MediaDependencies) {
   async function authorizeUpload(
     userId: string,
     input: { type: unknown; bytes: unknown },
-  ): Promise<MediaResult<{ asset: MediaAsset; uploadUrl: string; uploadToken: string; privateKey: string; expiresAt: string }>> {
+  ): Promise<MediaResult<{ asset: MediaAsset; privateBucket: string; privateKey: string; expiresAt: string }>> {
     if (!isMediaType(input.type) || typeof input.bytes !== 'number' || !Number.isSafeInteger(input.bytes) || input.bytes <= 0) {
       return fail(400, 'INVALID_UPLOAD_REQUEST', 'Upload type and byte size are invalid.');
     }
@@ -536,12 +500,6 @@ export function createMediaService(dependencies: MediaDependencies) {
     const id = newId();
     if (!hasUuid(id)) throw new Error('UUID generator returned an invalid identifier.');
     const privateKey = 'private/' + id;
-    let grant: { url: string; token: string; expiresInSeconds?: number };
-    try {
-      grant = await storage.createUploadGrant(privateBucket, privateKey, UPLOAD_GRANT_SECONDS);
-    } catch {
-      return fail(502, 'UPLOAD_GRANT_FAILED', 'Could not create a private upload grant.');
-    }
 
     const asset: MediaAsset = {
       id,
@@ -557,38 +515,42 @@ export function createMediaService(dependencies: MediaDependencies) {
       sha256: null,
       finalizedAt: null,
     };
-    const expiresAt = new Date(now().getTime() + UPLOAD_GRANT_SECONDS * 1000).toISOString();
     try {
       await repository.createUploading(asset);
-      await repository.createFinalizationGrant(asset.id, expiresAt);
+      const { expiresAt } = await repository.createUploadGrant(asset);
+      return { status: 201, data: { asset, privateBucket, privateKey, expiresAt } };
     } catch {
       return fail(502, 'MEDIA_RECORD_FAILED', 'Could not create the media record.');
     }
-    return { status: 201, data: { asset, uploadUrl: grant.url, uploadToken: grant.token, privateKey, expiresAt } };
   }
 
   async function finalizeUpload(userId: string, assetId: string): Promise<MediaResult<MediaAsset>> {
     const asset = await repository.getAsset(assetId);
-    if (!asset) return fail(404, 'MEDIA_NOT_FOUND', 'Media asset was not found.');
+    if (!asset || asset.ownerId !== userId) return fail(404, 'MEDIA_NOT_FOUND', 'Media asset was not found.');
     if (asset.status === 'ready') return { status: 200, data: asset };
-    if (!(await repository.claimFinalizationGrant(asset.id, now().toISOString()))) {
-      return fail(409, 'UPLOAD_GRANT_EXPIRED', 'The app finalization grant has expired or was already used.');
+    let bytes: Uint8Array | null;
+    try {
+      bytes = await storage.getObject(asset.privateBucket, asset.privateKey);
+    } catch {
+      return fail(502, 'MEDIA_READ_FAILED', 'Could not read the upload. Finalization can be retried.');
     }
-
-    const bytes = await storage.getObject(asset.privateBucket, asset.privateKey);
     if (!bytes) return fail(400, 'UPLOAD_MISSING', 'No upload was found for this media asset.');
     if (bytes.byteLength > maxBytes(asset.type)) {
       return fail(400, 'UPLOAD_TOO_LARGE', 'Uploaded bytes exceed the media type limit.');
     }
 
-    const inspection = inspectBytes(asset.type, bytes);
+    const inspection = await inspectBytes(asset.type, bytes);
     if ('error' in inspection) return fail(400, 'INVALID_MEDIA_CONTENT', inspection.error);
     const sha256 = await sha256Hex(bytes);
-    await repository.markReady(asset.id, { byteSize: bytes.byteLength, mimeType: inspection.mimeType, sha256 });
-
-    const ready = await repository.getAsset(asset.id);
-    if (!ready) throw new Error('Media asset disappeared after finalization.');
-    return { status: 200, data: ready };
+    try {
+      // No grant state changes before the external read and full validation.
+      // The service-only RPC locks/rechecks the grant and media row, then updates both atomically.
+      const ready = await repository.finalizeValidatedAsset(asset, { byteSize: bytes.byteLength, mimeType: inspection.mimeType, sha256 });
+      if (!ready) return fail(409, 'UPLOAD_GRANT_EXPIRED', 'The upload grant expired or was already finalized.');
+      return { status: 200, data: ready };
+    } catch {
+      return fail(502, 'MEDIA_FINALIZE_FAILED', 'Could not finalize the upload. Finalization can be retried.');
+    }
   }
 
   async function createPrivatePreview(assetId: string): Promise<MediaResult<{ url: string; expiresAt: string }>> {

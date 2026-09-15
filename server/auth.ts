@@ -60,7 +60,7 @@ function requiredEnvironment(name: string): string {
   return value.replace(/\/$/, '');
 }
 
-function supabaseFetch(input: string, init: RequestInit): Promise<Response> {
+function supabaseFetch(input: URL | RequestInfo, init?: RequestInit): Promise<Response> {
   return fetch(input, init);
 }
 
